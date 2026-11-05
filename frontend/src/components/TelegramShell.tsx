@@ -14,6 +14,9 @@ interface TgWebApp {
   themeParams?: TgTheme;
   ready(): void;
   expand(): void;
+  platform?: string;
+  requestFullscreen?(): void;
+  isVersionAtLeast?(v: string): boolean;
   onEvent?(e: "themeChanged", cb: () => void): void;
   offEvent?(e: "themeChanged", cb: () => void): void;
 }
@@ -86,6 +89,11 @@ export default function TelegramShell({ children }: { children: ReactNode }) {
       }
       if (!wa.initData) return; // opened in a normal browser
       try { wa.ready(); wa.expand(); } catch { /* old clients */ }
+      // Desktop / web Telegram: open the Mini App full screen (Bot API 8.0+)
+      try {
+        const desktop = ["tdesktop", "macos", "web", "weba", "webk", "unigram"].includes(wa.platform ?? "");
+        if (desktop && wa.requestFullscreen && wa.isVersionAtLeast?.("8.0")) wa.requestFullscreen();
+      } catch { /* not supported */ }
       applyTheme(wa);
       wa.onEvent?.("themeChanged", onTheme);
       document.documentElement.classList.add("tg");
