@@ -9,6 +9,8 @@ module.exports = (phase) => {
     trailingSlash: true,
     images: { unoptimized: true },
   };
+  // Optional sub-path hosting (e.g. GitHub Pages: BASE_PATH=/uzex-birja-ai-agent)
+  if (process.env.BASE_PATH) config.basePath = process.env.BASE_PATH;
   if (phase === PHASE_PRODUCTION_BUILD) {
     // Same-origin build: the browser calls /api/v1 relative to wherever the page is served
     // (127.0.0.1:8000 or a tunnel). Override with EXPORT_API_URL if ever needed.
