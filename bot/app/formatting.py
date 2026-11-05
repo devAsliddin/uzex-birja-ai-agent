@@ -114,8 +114,8 @@ HELP = """Birja reyestri boti — buyruqlar / команды:
 /broker <BK001> — broker profili: reyting, bitimlar, aylanma
 /top_brokers [yil] — aylanma bo'yicha top-10 broker
 /export <DD.MM.YYYY> <DD.MM.YYYY> [holat] [xlsx] — bitimlar fayli (CSV yoki Excel)
-/chatid — shu chat ID si
 Holatlar: yangi, imzolanmagan, tuzilgan, kutilmoqda, tolangan, bajarilgan, qisman, bekor
+/new — yangi suhbat / новый диалог
 Erkin savol / Свободный вопрос: shaxsiy chatda shunchaki yozing; guruhda botni @eslang yoki xabariga javob qiling."""
 
 EXAMPLES = (
@@ -124,23 +124,16 @@ EXAMPLES = (
     "2023-yil mart oyida qaysi tovar eng ko'p sotilgan?",
 )
 
+OPEN_APP = "Ilovani ochish / Открыть приложение"
+
 START_TEXT = (
-    "Birja bitimlari (2022–2026) bo'yicha istalgan savolni o'zbek yoki rus tilida yozing — agent javobni "
-    "faqat ma'lumotlar bazasidan oladi va har bir javob ostida manbasini (SQL va natija) ko'rsatadi. "
-    "Ma'lumotda javob bo'lmasa, shuni ochiq aytadi.
-
-"
-    "Задайте любой вопрос о биржевых сделках 2022–2026 на русском или узбекском — агент отвечает только "
-    "по данным реестра и под каждым ответом показывает источник (SQL и результат). Если данных нет, "
-    "он прямо об этом скажет.
-
-"
-    "Misollar / Примеры:
-" + "
-".join(f"• {q}" for q in EXAMPLES) + "
-
-"
-    "Buyruqlar / команды: /help"
+    "Men UZEX birja bitimlari (2022–2026) bo'yicha AI yordamchiman. Savolingizni o'zbek "
+    "yoki rus tilida oddiy so'z bilan yozing — javobni faqat bitimlar bazasidan olaman, manbasini (SQL va "
+    "natija) javob ostida ko'rsataman. Ma'lumot bo'lmasa, ochiq aytaman.\n\n"
+    "Я AI-помощник по биржевым сделкам UZEX (2022–2026). Пишите вопрос обычными словами "
+    "на русском или узбекском — отвечаю только по данным реестра и показываю источник. Можно уточнять: "
+    "«а в 2025?».\n\n"
+    "Misol savollar / Примеры — bosing / нажмите:"
 )
 
 
@@ -320,7 +313,6 @@ UZ_CYR = set("ўқғҳЎҚҒҲ")
 SQL_MAX = 1500
 TABLE_MAX_ROWS = 5
 CELL_MAX = 28
-TABLE_MAX_WIDTH = 44  # wider tables wrap badly on phones -> fall back to "column: value" lines
 
 
 def detect_lang(text: str) -> str:
@@ -344,20 +336,22 @@ def ru_rows(n: int) -> str:
 
 LABELS = {
     "uz": {
-        "source": "Manba", "basis": "Asos", "rows": lambda n: f"{fmt_int(n)} ta qator",
-        "shown": lambda k: f"birinchi {k} tasi", "no_data": "Ma'lumotlarda javob topilmadi.",
+        "source": "Manba", "basis": "Asos", "result": "Natija", "rows": lambda n: f"{fmt_int(n)} ta qator",
+        "no_data": "Bilmayman — ma'lumotlarda bu haqida ma'lumot yo'q.",
         "error": "Kechirasiz, savolni qayta ishlab bo'lmadi. Savolni boshqacha ifodalab ko'ring.",
         "timeout": "Kechirasiz, javob 80 soniyada tayyor bo'lmadi. Savolni soddaroq qilib qayta yuboring.",
         "down": "Kechirasiz, agent hozir javob bermayapti. Birozdan keyin qayta urinib ko'ring.",
         "empty": "Savol bo'sh. Misol: " + EXAMPLES[0],
+        "new": "Yangi suhbat boshlandi. Savolingizni yozing.",
     },
     "ru": {
-        "source": "Источник", "basis": "Основание", "rows": ru_rows,
-        "shown": lambda k: f"первые {k}", "no_data": "В данных ответа нет.",
+        "source": "Источник", "basis": "Основание", "result": "Результат", "rows": ru_rows,
+        "no_data": "Не знаю — в данных нет такой информации.",
         "error": "Извините, не удалось обработать вопрос. Попробуйте переформулировать.",
         "timeout": "Извините, ответ не был готов за 80 секунд. Попробуйте задать вопрос проще.",
         "down": "Извините, агент сейчас не отвечает. Повторите попытку чуть позже.",
         "empty": "Вопрос пустой. Пример: " + EXAMPLES[1],
+        "new": "Начат новый диалог. Задайте вопрос.",
     },
 }
 
@@ -377,29 +371,21 @@ def _cell(v: Any) -> str:
         if v.is_integer() and abs(v) < 1e15:
             return fmt_int(int(v))
         return f"{v:,.2f}".replace(",", " ")
-    s = str(v).replace("
-", " ")
+    s = str(v).replace("\n", " ")
     return s if len(s) <= CELL_MAX else s[: CELL_MAX - 1] + "…"
 
 
-def _table(columns: list[Any], rows: list[list[Any]]) -> str:
-    cols = [_cell(c) for c in columns] or [f"c{i + 1}" for i in range(len(rows[0]) if rows else 0)]
-    body = [[_cell(v) for v in r] for r in rows]
-    n = max([len(cols)] + [len(r) for r in body])
-    cols += [""] * (n - len(cols))
-    body = [r + [""] * (n - len(r)) for r in body]
-    widths = [max(len(cols[i]), *(len(r[i]) for r in body)) for i in range(n)]
-    if sum(widths) + 3 * (n - 1) <= TABLE_MAX_WIDTH:
-        line = lambda r: " | ".join(v.ljust(widths[i]) for i, v in enumerate(r)).rstrip()  # noqa: E731
-        out = [line(cols), "-+-".join("-" * w for w in widths)] + [line(r) for r in body]
-    else:
-        out = []
-        for k, r in enumerate(body):
-            if k:
-                out.append("")
-            out += [f"{cols[i]}: {r[i]}" for i in range(n)]
-    return "
-".join(out)
+def _rows_text(columns: list[Any], rows: list[list[Any]]) -> str:
+    """Up to 5 result rows as 'column: value; column: value' lines (no monospace inside a quote)."""
+    n = max([len(columns)] + [len(r) for r in rows])
+    cols = [_cell(c) for c in columns] + [f"#{i + 1}" for i in range(len(columns), n)]
+    out = []
+    for r in rows:
+        vals = [_cell(v) for v in r] + [""] * (n - len(r))
+        out.append(vals[0] if n == 1 else "; ".join(f"{cols[i]}: {vals[i]}" for i in range(n)))
+    if n == 1:
+        out.insert(0, f"{cols[0]}:")
+    return "\n".join(out)
 
 
 def _lang(resp: dict, question: str) -> str:
@@ -414,7 +400,10 @@ def agent_reply(resp: dict, question: str) -> str:
     status = resp.get("status")
     if status not in ("ok", "no_data"):
         return esc(L["error"])
-    answer = str(resp.get("answer") or "").strip() or (L["no_data"] if status == "no_data" else "")
+    answer = str(resp.get("answer") or "").strip()
+    if status == "no_data":
+        # Shown exactly as the agent said it ("Bilmayman — ..."), no source block, no decoration.
+        return esc(answer or L["no_data"])
     if not answer:
         return esc(L["error"])
     sql_list = [str(q).strip() for q in (resp.get("sql") or []) if str(q).strip()]
@@ -426,31 +415,30 @@ def agent_reply(resp: dict, question: str) -> str:
     except (TypeError, ValueError):
         row_count = len(rows)
 
+    # Source goes into a collapsed (expandable) quote under the answer. Telegram does not allow
+    # pre/code entities inside a blockquote, so its content is plain escaped text (+ bold labels).
     src: list[str] = []
     if basis:
-        src.append(f"{L['basis']}: {esc(basis[:400])}")
+        src.append(f"<b>{esc(L['basis'])}:</b> {esc(basis[:400])}")
     if sql_list:
-        sql = ";
-
-".join(sql_list)
+        sql = ";\n\n".join(sql_list)
         if len(sql) > SQL_MAX:
             sql = sql[: SQL_MAX - 1] + "…"
-        src.append(f"<pre><code class=\"language-sql\">{esc(sql)}</code></pre>")
-    if sql_list or rows or row_count:
-        src.append(esc(L["rows"](row_count)))
+        src.append(f"<b>SQL:</b>\n{esc(sql)}")
     if rows and len(rows) <= TABLE_MAX_ROWS and all(isinstance(r, (list, tuple)) for r in rows):
-        src.append(f"<pre>{esc(_table(list(columns), [list(r) for r in rows]))}</pre>")
+        src.append(f"<b>{esc(L['result'])}:</b>\n{esc(_rows_text(list(columns), [list(r) for r in rows]))}")
 
-    head = f"<b>{esc(L['source'])}</b>"
-    tail = "
-".join([head] + src) if src else ""
+    tail = ""
+    if src or row_count:
+        head = f"<b>{esc(L['source'])}</b> · {esc(L['rows'](row_count))}"
+        tail = "<blockquote expandable>" + "\n".join([head] + src) + "</blockquote>"
     budget = MAX_MSG - len(tail) - 2
     body = esc(answer)
-    if len(body) > budget:
-        body = esc(answer[: max(200, budget - 200)]) + "…"
-    return body + ("
-
-" + tail if tail else "")
+    cut = len(answer)
+    while len(body) > budget and cut > 100:
+        cut = int(cut * 0.9)
+        body = esc(answer[:cut]) + "…"
+    return body + ("\n\n" + tail if tail else "")
 
 
 def agent_failure(kind: str, question: str) -> str:

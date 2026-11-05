@@ -1,21 +1,31 @@
-"""Command handlers. All answers come straight from the backend API (no LLM),
-except free-text questions, which are forwarded to /ai/chat as plain data."""
+"""Command handlers. Commands are answered straight from the backend REST API (no LLM).
+Free-text questions go to /agent/ask as plain data; the reply shows the answer plus its source (basis, SQL, rows)."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import re
 import time
+from collections import OrderedDict, deque
 from datetime import date, datetime
 from functools import wraps
 from typing import Any, Awaitable, Callable
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
+)
 
 from . import formatting as fm
-from .backend import BackendClient, BackendError, NotFound, TooLarge
+from .backend import AgentTimeout, BackendClient, BackendError, NotFound, TooLarge
 from .config import Settings
 from .middlewares import chat_ref, is_addressed
 
@@ -30,15 +40,38 @@ CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 GENERIC_ERR = "Ma'lumot manbasi hozir javob bermayapti. Birozdan keyin qayta urinib ko'ring."
 AI_MAX_INPUT = 500
 EXPORT_COOLDOWN = 30.0
-AI_RETRY_AFTER = 300.0
+TYPING_EVERY = 4.0  # Telegram shows "typing" for ~5 s per action
 
 
 class State:
     """Mutable per-process state kept out of module globals (easier to test)."""
 
-    def __init__(self) -> None:
-        self.ai_disabled_until = 0.0
+    HISTORY_TURNS = 6  # last 6 question/answer pairs are sent with each question
+    MAX_CONVERSATIONS = 5000  # LRU bound on in-memory conversations
+
+    def __init__(self, agent_concurrency: int = 20) -> None:
         self.export_last: dict[int, float] = {}
+        # Global cap: at most N questions hit the agent at once; the rest wait (inside the timeout).
+        self.agent_sem = asyncio.Semaphore(max(1, agent_concurrency))
+        self._conv: OrderedDict[tuple[int, int], deque[dict[str, str]]] = OrderedDict()
+        self.webapp_url: str | None = None  # Mini App URL (env / tunnel file), refreshed every 60 s
+        self.menu_url: str | None = None  # URL the chat menu button currently points to
+
+    def history(self, key: tuple[int, int]) -> list[dict[str, str]]:
+        return list(self._conv.get(key, ()))
+
+    def remember(self, key: tuple[int, int], question: str, answer: str) -> None:
+        q = self._conv.get(key)
+        if q is None:
+            q = self._conv[key] = deque(maxlen=2 * self.HISTORY_TURNS)
+            while len(self._conv) > self.MAX_CONVERSATIONS:
+                self._conv.popitem(last=False)
+        self._conv.move_to_end(key)
+        q.append({"role": "user", "content": question})
+        q.append({"role": "assistant", "content": answer[:2000]})
+
+    def reset(self, key: tuple[int, int]) -> None:
+        self._conv.pop(key, None)
 
 
 def safe(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
@@ -75,13 +108,19 @@ def parse_date(s: str) -> date | None:
 
 
 # ---------------------------------------------------------------------------
-async def cmd_help(message: Message, bot_state: State, backend: BackendClient) -> None:
-    ai_on = backend.ai_enabled and time.monotonic() >= bot_state.ai_disabled_until
-    await message.answer(fm.HELP if ai_on else fm.HELP_NO_AI)
+async def cmd_start(message: Message, bot_state: State) -> None:
+    rows = [[InlineKeyboardButton(text=q, callback_data=f"ex:{i}")] for i, q in enumerate(fm.EXAMPLES)]
+    url = bot_state.webapp_url
+    if url:
+        # web_app buttons work only in private chats; groups get a plain link to the same app
+        btn = (InlineKeyboardButton(text=fm.OPEN_APP, web_app=WebAppInfo(url=url))
+               if message.chat.type == "private" else InlineKeyboardButton(text=fm.OPEN_APP, url=url))
+        rows.insert(0, [btn])
+    await message.answer(fm.START_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-async def cmd_chatid(message: Message) -> None:
-    await message.answer(f"Chat ID: {message.chat.id} ({message.chat.type}).")
+async def cmd_help(message: Message) -> None:
+    await message.answer(fm.HELP)
 
 
 @safe
@@ -211,36 +250,107 @@ async def _addressed_text(message: Message, bot: Bot) -> bool:
     return bool(message.text) and not message.text.startswith("/") and await is_addressed(message, bot)
 
 
-@safe
-async def free_text(message: Message, bot: Bot, backend: BackendClient, bot_state: State) -> None:
+async def _keep_typing(bot: Bot, chat_id: int) -> None:
+    """Re-send "typing" while the agent works (the first one is sent before this task starts)."""
+    with contextlib.suppress(Exception):
+        while True:
+            await asyncio.sleep(TYPING_EVERY)
+            await bot.send_chat_action(chat_id, "typing")
+
+
+def _conv_key(chat_id: int, user_id: int | None) -> tuple[int, int]:
+    """History is kept per chat AND per user, so jury members in one group do not mix contexts."""
+    return chat_id, user_id or 0
+
+
+async def free_text(message: Message, bot: Bot, backend: BackendClient, bot_state: State, settings: Settings) -> None:
     me = await bot.me()
     text = message.text or ""
     if me.username:
         text = re.sub(rf"@{re.escape(me.username)}\b", " ", text, flags=re.IGNORECASE)
-    text = CTRL.sub(" ", text).strip()[:AI_MAX_INPUT]
+    user_id = message.from_user.id if message.from_user else None
+    await ask_and_reply(bot, message.chat.id, user_id, text, backend, bot_state, settings,
+                        reply_to=message.message_id if message.chat.type != "private" else None)
+
+
+async def ask_and_reply(
+    bot: Bot, chat_id: int, user_id: int | None, raw: str, backend: BackendClient, bot_state: State,
+    settings: Settings, *, reply_to: int | None = None, echo: bool = False,
+) -> None:
+    """Send the question (+ short history) to the agent and post the answer with its source."""
+    text = CTRL.sub(" ", raw).strip()[:AI_MAX_INPUT]
     if not text:
-        await message.answer(fm.HELP)
+        await bot.send_message(chat_id, fm.agent_failure("empty", raw), parse_mode="HTML")
         return
-    if not backend.ai_enabled or time.monotonic() < bot_state.ai_disabled_until:
-        await message.answer(fm.HELP_NO_AI)
-        return
-    await bot.send_chat_action(message.chat.id, "typing")
+    ref = chat_ref(chat_id)
+    key = _conv_key(chat_id, user_id)
+    history = bot_state.history(key)
+    with contextlib.suppress(Exception):
+        await bot.send_chat_action(chat_id, "typing")
+    typing = asyncio.create_task(_keep_typing(bot, chat_id))
+    t0 = time.monotonic()
     try:
-        answer = await backend.ai_chat(text)  # user text is sent as data in the `message` field
-    except BackendError as e:
-        log.info("ai unavailable (%s) chat=%s", e, chat_ref(message.chat.id))
-        bot_state.ai_disabled_until = time.monotonic() + AI_RETRY_AFTER
-        await message.answer(fm.HELP_NO_AI)
+        try:
+            async with asyncio.timeout(settings.agent_timeout):
+                async with bot_state.agent_sem:
+                    resp = await backend.ask(text, history=history, timeout=settings.agent_timeout)
+            reply = fm.agent_reply(resp, text)
+            if resp.get("status") in ("ok", "no_data") and str(resp.get("answer") or "").strip():
+                bot_state.remember(key, text, str(resp["answer"]).strip())
+            log.info("ask chat=%s status=%s turns=%d ms=%d", ref, resp.get("status"), len(history) // 2,
+                     (time.monotonic() - t0) * 1000)
+        except (TimeoutError, AgentTimeout):
+            log.warning("ask timeout chat=%s", ref)
+            reply = fm.agent_failure("timeout", text)
+        except BackendError as e:
+            log.warning("ask backend error (%s) chat=%s", e, ref)
+            reply = fm.agent_failure("down", text)
+        except Exception:  # noqa: BLE001 - never leak internals to chat
+            log.exception("ask failed chat=%s", ref)
+            reply = fm.agent_failure("down", text)
+    finally:
+        typing.cancel()
+    if echo:  # the question came from a button: show it above the answer
+        reply = f"<i>{fm.esc(text)}</i>\n\n{reply}"
+    try:
+        await bot.send_message(chat_id, reply, parse_mode="HTML", disable_web_page_preview=True,
+                               reply_to_message_id=reply_to, allow_sending_without_reply=True)
+    except Exception:  # noqa: BLE001 - e.g. HTML rejected: resend as plain text without markup
+        log.warning("html reply rejected chat=%s, resending plain", ref)
+        plain = re.sub(r"<[^>]+>", "", reply).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+        await bot.send_message(chat_id, plain, parse_mode=None, reply_to_message_id=reply_to,
+                               allow_sending_without_reply=True)
+
+
+async def cmd_new(message: Message, bot_state: State) -> None:
+    user_id = message.from_user.id if message.from_user else None
+    bot_state.reset(_conv_key(message.chat.id, user_id))
+    await message.answer(fm.agent_failure("new", message.text or ""))
+
+
+async def on_example(query: CallbackQuery, bot: Bot, backend: BackendClient, bot_state: State,
+                     settings: Settings) -> None:
+    """Inline example button from /start: ask that question as if the user had typed it."""
+    try:
+        idx = int((query.data or "").split(":", 1)[1])
+        question = fm.EXAMPLES[idx]
+    except (IndexError, ValueError):
+        await query.answer()
         return
-    await message.answer(fm.clip(answer.strip()))
+    await query.answer()
+    if query.message is None:
+        return
+    await ask_and_reply(bot, query.message.chat.id, query.from_user.id, question, backend, bot_state, settings,
+                        echo=True)
 
 
 def build_router() -> Router:
     """Fresh router per dispatcher (aiogram routers can be attached only once)."""
     r = Router(name="registry")
-    r.message(CommandStart())(cmd_help)
+    r.message(CommandStart())(cmd_start)
+    r.message(Command("new"))(cmd_new)
+    r.callback_query(F.data.startswith("ex:"))(on_example)
     r.message(Command("help"))(cmd_help)
-    r.message(Command("chatid"))(cmd_chatid)
     r.message(Command("summary"))(cmd_summary)
     r.message(Command("deal"))(cmd_deal)
     r.message(Command("broker"))(cmd_broker)

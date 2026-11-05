@@ -114,12 +114,13 @@ class BackendClient:
             raise BackendError(type(e).__name__) from e
         return bytes(buf)
 
-    async def ask(self, question: str, timeout: float = 80.0) -> dict[str, Any]:
-        """POST /agent/ask. The question is sent as data in the `question` field (never as instructions)."""
+    async def ask(
+        self, question: str, history: list[dict[str, str]] | None = None, timeout: float = 80.0
+    ) -> dict[str, Any]:
+        """POST /agent/ask. The question and history are sent as data fields (never as instructions)."""
+        body: dict[str, Any] = {"question": question, "language": "auto", "history": history or []}
         try:
-            r = await self._client.post(
-                "agent/ask", json={"question": question, "language": "auto"}, timeout=timeout
-            )
+            r = await self._client.post("agent/ask", json=body, timeout=timeout)
         except httpx.TimeoutException as e:
             raise AgentTimeout() from e
         except httpx.HTTPError as e:

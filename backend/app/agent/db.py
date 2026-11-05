@@ -108,6 +108,7 @@ class QueryResult:
 def connect() -> sqlite3.Connection:
     path = db_path()
     conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5, check_same_thread=False)
+    conn.create_function("ulower", 1, lambda v: v.lower() if isinstance(v, str) else v, deterministic=True)
     conn.execute(V_DEALS_SQL)  # TEMP schema only (in-memory), main DB stays read-only
     conn.execute("PRAGMA query_only=ON")
     return conn

@@ -15,7 +15,7 @@ import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.methods import GetMe, SendDocument, SendMessage, TelegramMethod
-from aiogram.types import Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -87,7 +87,25 @@ BROKERS = {
 CSV_BYTES = "deal_no,deal_date\n1,2025-01-01\n".encode()
 
 
-def make_backend_handler(*, deal_total: int = 2, ai_status: int = 200, delay: float = 0.0):
+AGENT_OK = {
+    "answer": "2025-yilda 115 763 ta bitim tuzilgan.", "language": "uz", "status": "ok",
+    "sql": ["SELECT COUNT(*) AS deals FROM deals WHERE deal_date >= '2025-01-01' AND deal_date < '2026-01-01'"],
+    "columns": ["deals"], "rows": [[115763]], "row_count": 1,
+    "basis": "deals jadvali, 2025-yil, barcha holatlar", "model": "test", "latency_ms": 5,
+}
+AGENT_NO_DATA = {
+    "answer": "Bilmayman — ma'lumotlarda bu haqida ma'lumot yo'q.", "language": "uz", "status": "no_data",
+    "sql": ["SELECT 1 FROM deals WHERE product_name ILIKE '%banan%'"], "columns": [], "rows": [], "row_count": 0,
+    "basis": "deals jadvali", "model": "test", "latency_ms": 5,
+}
+AGENT_ERROR = {
+    "answer": "Traceback: internal detail", "language": "ru", "status": "error", "sql": [], "columns": [],
+    "rows": [], "row_count": 0, "basis": "", "model": "test", "latency_ms": 5,
+}
+
+
+def make_backend_handler(*, deal_total: int = 2, delay: float = 0.0, agent_delay: float = 0.0,
+                         agent_status: int = 200, agent: dict | None = None):
     calls: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -96,6 +114,15 @@ def make_backend_handler(*, deal_total: int = 2, ai_status: int = 200, delay: fl
             await asyncio.sleep(delay)
         p = request.url.path.removeprefix("/api/v1/")
         q = request.url.params
+        if p == "agent/ask":
+            if agent_delay:
+                await asyncio.sleep(agent_delay)
+            if agent_status != 200:
+                return httpx.Response(agent_status, json={"detail": "x"})
+            body = json.loads(request.content)
+            if agent is not None:
+                return httpx.Response(200, json=agent)
+            return httpx.Response(200, json={**AGENT_OK, "basis": AGENT_OK["basis"] + " | q=" + body["question"]})
         if p == "analytics/summary":
             return httpx.Response(200, json=SUMMARY_USD if q.get("currency") == "USD" else SUMMARY_UZS)
         if p == "deals/1234567":
@@ -112,14 +139,6 @@ def make_backend_handler(*, deal_total: int = 2, ai_status: int = 200, delay: fl
             return httpx.Response(200, json=BROKERS)
         if p == "export/deals":
             return httpx.Response(200, content=CSV_BYTES, headers={"content-type": "text/csv"})
-        if p == "ai/chat":
-            if request.headers.get("X-API-Key") != "test-key":
-                return httpx.Response(401, json={"error": "unauthorized"})
-            if ai_status != 200:
-                return httpx.Response(ai_status, json={"detail": "x"})
-            body = json.loads(request.content)
-            return httpx.Response(200, json={"response": f"AI javob: {body['message']}", "language": "uz",
-                                             "conversation_id": 1})
         return httpx.Response(500)
 
     return handler, calls
@@ -174,13 +193,25 @@ def make_update(text: str, chat_id: int = GROUP_ID, chat_type: str = "supergroup
     )
 
 
+def make_callback(data: str, chat_id: int = GROUP_ID, user_id: int = 4242) -> Update:
+    """User taps an inline button under a bot message."""
+    n = next(_upd)
+    chat_type = "private" if chat_id > 0 else "supergroup"
+    msg = Message(message_id=n, date=datetime.now(), chat=Chat(id=chat_id, type=chat_type),
+                  from_user=User(id=BOT_ID, is_bot=True, first_name="Birja"), text="start")
+    return Update(update_id=n, callback_query=CallbackQuery(
+        id=str(n), from_user=User(id=user_id, is_bot=False, first_name="U"), chat_instance="ci",
+        data=data, message=msg))
+
+
 class Harness:
-    def __init__(self, *, allowed=(GROUP_ID,), rate=1000, ai_key: str = "test-key", **backend_kw: Any) -> None:
+    def __init__(self, *, rate=1000, per_day=100_000, concurrency=20, agent_timeout=80.0,
+                 **backend_kw: Any) -> None:
         handler, self.backend_calls = make_backend_handler(**backend_kw)
         self.settings = Settings(bot_token=FAKE_TOKEN, backend_url="http://backend.test/api/v1",
-                                 allowed_chat_ids=frozenset(allowed), rate_limit_per_min=rate)
-        self.backend = BackendClient(self.settings.backend_url, ai_api_key=ai_key,
-                                     transport=httpx.MockTransport(handler))
+                                 rate_limit_per_min=rate, rate_limit_per_day=per_day,
+                                 agent_concurrency=concurrency, agent_timeout=agent_timeout)
+        self.backend = BackendClient(self.settings.backend_url, transport=httpx.MockTransport(handler))
         self.session = FakeSession()
         self.bot = Bot(FAKE_TOKEN, session=self.session)
         self.dp = build_dispatcher(self.settings, self.backend)

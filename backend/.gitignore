@@ -13,3 +13,6 @@ data/
 .mypy_cache/
 .ruff_cache/
 .gstack/
+
+# agent answer cache
+agent_cache.sqlite

@@ -29,7 +29,7 @@ def pct(values: list[float], p: float) -> float:
 
 
 async def run_load(n: int, backend_delay: float) -> dict:
-    hh = Harness(allowed=CHATS, rate=10_000, delay=backend_delay)
+    hh = Harness(rate=10_000, delay=backend_delay)
     rnd = random.Random(7)
     lat: list[float] = []
     errors = 0
@@ -100,3 +100,53 @@ async def test_concurrent_exports_cooldown():
         assert len(docs) <= 2  # cooldown prevents export storms
     finally:
         await hh.close()
+
+
+QUESTIONS = [
+    "2025-yilda jami nechta bitim tuzilgan?", "Какой брокер имел наибольший оборот в 2024 году?",
+    "2023-yil mart oyida qaysi tovar eng ko'p sotilgan?", "Сколько сделок аннулировано в 2022?",
+    "Banan narxi qancha?", "x" * 5000, "<script>alert(1)</script>", "  ",
+]
+
+
+async def run_agent_load(n: int, latency: float, concurrency: int) -> dict:
+    """n users ask at once (private chats); every /agent/ask call takes `latency` seconds."""
+    hh = Harness(rate=10, per_day=200, concurrency=concurrency, agent_delay=latency)
+    lat: list[float] = []
+    exceptions = 0
+
+    async def one(i: int) -> None:
+        nonlocal exceptions
+        upd = make_update(QUESTIONS[i % len(QUESTIONS)], chat_id=50_000 + i, chat_type="private",
+                          user_id=50_000 + i)
+        t0 = time.perf_counter()
+        try:
+            await hh.dp.feed_update(hh.bot, upd)
+        except Exception:  # noqa: BLE001
+            exceptions += 1
+        lat.append(time.perf_counter() - t0)
+
+    t0 = time.perf_counter()
+    await asyncio.gather(*(one(i) for i in range(n)))
+    wall = time.perf_counter() - t0
+    sent = [m for m in hh.session.sent() if isinstance(m, SendMessage)]
+    with_source = sum(1 for m in sent if "<b>Manba</b>" in m.text or "<b>Источник</b>" in m.text)
+    failures = sum(1 for m in sent if m.text.startswith(("Kechirasiz", "Извините")))
+    await hh.close()
+    asks = len([c for c in hh.backend_calls if c.url.path.endswith("agent/ask")])
+    return {
+        "questions": n, "replies": len(sent), "with_source": with_source, "failure_replies": failures,
+        "exceptions": exceptions, "agent_calls": asks, "concurrency_cap": concurrency,
+        "backend_latency_s": latency, "p50_s": round(statistics.median(lat), 2), "p95_s": round(pct(lat, 95), 2),
+        "max_s": round(max(lat), 2), "wall_s": round(wall, 2),
+    }
+
+
+async def test_stress_100_concurrent_questions_2s_backend():
+    r = await run_agent_load(100, latency=2.0, concurrency=20)
+    print("\nAGENT STRESS 100 x 2 s:", r)
+    assert r["exceptions"] == 0
+    assert r["replies"] == 100  # every question answered exactly once
+    assert r["failure_replies"] == 0
+    # 100 questions, cap 20, 2 s each -> 5 waves -> ~10 s worst case, far below the 80 s timeout
+    assert r["max_s"] < 15 and r["p95_s"] < 15

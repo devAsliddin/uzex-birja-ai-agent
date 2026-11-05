@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from aiogram.methods import SendDocument, SendMessage
+import asyncio
+import html
+import json
+import time
 
-from conftest import BOT_USERNAME, GROUP_ID, Harness
+from aiogram.methods import AnswerCallbackQuery, SendChatAction, SendDocument, SendMessage
+
+from app.formatting import EXAMPLES
+from conftest import AGENT_ERROR, AGENT_NO_DATA, AGENT_OK, BOT_USERNAME, GROUP_ID, Harness, make_callback
 
 
 def one_text(out) -> str:
@@ -14,11 +20,13 @@ def one_text(out) -> str:
 
 
 async def test_help_and_start(h):
-    for cmd in ("/start", "/help", f"/help@{BOT_USERNAME}"):
+    for cmd in ("/help", f"/help@{BOT_USERNAME}"):
         t = one_text(await h.send(cmd))
-        assert t.startswith("Birja reyestri boti — buyruqlar:")
-        for c in ("/summary", "/deal", "/broker", "/top_brokers", "/export"):
+        assert t.startswith("Birja reyestri boti — buyruqlar")
+        for c in ("/summary", "/deal", "/broker", "/top_brokers", "/export", "/new"):
             assert c in t
+    t = one_text(await h.send("/start", chat_id=555, chat_type="private"))
+    assert "2022–2026" in t and "o'zbek yoki rus" in t and "на русском или узбекском" in t
 
 
 async def test_summary_year(h):
@@ -102,49 +110,215 @@ async def test_export_validation():
         await hh.close()
 
 
+def one_msg(out) -> SendMessage:
+    msgs = [m for m in out if isinstance(m, SendMessage)]
+    assert len(msgs) == 1, out
+    return msgs[0]
+
+
+def asks(hh) -> list[dict]:
+    return [json.loads(c.content) for c in hh.backend_calls if c.url.path.endswith("agent/ask")]
+
+
+async def test_agent_ok_private_with_source(h):
+    out = await h.send("2025-yilda nechta bitim?", chat_id=555, chat_type="private")
+    assert any(isinstance(m, SendChatAction) and m.action == "typing" for m in h.session.requests)
+    m = one_msg(out)
+    assert m.parse_mode == "HTML"
+    t = m.text
+    answer, src = t.split("\n\n", 1)
+    assert answer == "2025-yilda 115 763 ta bitim tuzilgan."  # plain chat answer first
+    assert src.startswith("<blockquote expandable><b>Manba</b> · 1 ta qator\n") and src.endswith("</blockquote>")
+    assert "<b>Asos:</b> deals jadvali" in src
+    assert "<b>SQL:</b>\nSELECT COUNT(*) AS deals FROM deals WHERE deal_date &gt;= '2025-01-01'" in src
+    assert "<b>Natija:</b>\ndeals:\n115 763" in src
+    assert "<pre>" not in t and "<code>" not in t  # not allowed inside a blockquote
+    assert asks(h)[0] == {"question": "2025-yilda nechta bitim?", "language": "auto", "history": []}
+
+
+async def test_agent_html_escaped_and_ru_labels():
+    evil = {**AGENT_OK, "language": "ru", "answer": "<b>x</b> & <script>", "basis": "<i>b</i>",
+            "sql": ["SELECT '<a href=x>' " + "x" * 3000], "columns": ["a<", "b"], "rows": [["<z>", 2]],
+            "row_count": 21}
+    hh = Harness(agent=evil)
+    try:
+        t = one_msg(await hh.send("Сколько сделок?", chat_id=1, chat_type="private")).text
+        assert t.startswith(html.escape("<b>x</b> & <script>", quote=False))
+        assert "<b>Источник</b> · 21 строка" in t and "<b>Основание:</b> &lt;i&gt;b&lt;/i&gt;" in t
+        assert "a&lt;: &lt;z&gt;; b: 2" in t
+        assert "<script>" not in t and "<a href" not in t and "<i>" not in t
+        sql_part = t.split("<b>SQL:</b>\n")[1].split("\n<b>")[0]
+        assert len(html.unescape(sql_part)) <= 1500
+        assert len(t) <= 4096
+    finally:
+        await hh.close()
+
+
+async def test_agent_long_answer_fits_telegram_limit():
+    hh = Harness(agent={**AGENT_OK, "answer": "<&>" * 3000})
+    try:
+        t = one_msg(await hh.send("savol", chat_id=1, chat_type="private")).text
+        assert len(t) <= 4096 and "<b>Manba</b>" in t and t.endswith("</blockquote>")
+    finally:
+        await hh.close()
+
+
+async def test_agent_many_rows_no_table():
+    data = {**AGENT_OK, "columns": ["broker", "turnover"], "rows": [[f"BK{i:03d}", i] for i in range(10)],
+            "row_count": 10}
+    hh = Harness(agent=data)
+    try:
+        t = one_msg(await hh.send("top brokerlar", chat_id=1, chat_type="private")).text
+        assert "10 ta qator" in t and "BK009" not in t  # > 5 rows: only the count
+    finally:
+        await hh.close()
+
+
+async def test_agent_multi_column_rows():
+    data = {**AGENT_OK, "columns": ["broker", "region", "turnover"],
+            "rows": [["Broker One", "Toshkent", 123456789012.5], ["Broker Two", None, 7]], "row_count": 2}
+    hh = Harness(agent=data)
+    try:
+        t = one_msg(await hh.send("eng katta broker", chat_id=1, chat_type="private")).text
+        assert "broker: Broker One; region: Toshkent; turnover: 123 456 789 012.50" in t
+        assert "broker: Broker Two; region: —; turnover: 7" in t
+    finally:
+        await hh.close()
+
+
+async def test_agent_no_data_shown_as_is():
+    hh = Harness(agent=AGENT_NO_DATA)
+    try:
+        t = one_msg(await hh.send("Banan narxi qancha?", chat_id=1, chat_type="private")).text
+        assert t == "Bilmayman — ma'lumotlarda bu haqida ma'lumot yo'q."  # no source block, no decoration
+    finally:
+        await hh.close()
+
+
+async def test_agent_error_status_generic_ru():
+    hh = Harness(agent=AGENT_ERROR)
+    try:
+        t = one_msg(await hh.send("Сколько сделок?", chat_id=1, chat_type="private")).text
+        assert t.startswith("Извините, не удалось обработать вопрос")
+        assert "Traceback" not in t
+        await hh.send("а в 2025?", chat_id=1, chat_type="private")
+        assert asks(hh)[1]["history"] == []  # failed turns are not remembered
+    finally:
+        await hh.close()
+
+
+async def test_agent_http_500_and_timeout():
+    hh = Harness(agent_status=500)
+    try:
+        t = one_msg(await hh.send("savol", chat_id=1, chat_type="private")).text
+        assert t.startswith("Kechirasiz, agent hozir javob bermayapti")
+    finally:
+        await hh.close()
+    hh = Harness(agent_delay=1.0, agent_timeout=0.2)
+    try:
+        t = one_msg(await hh.send("Сколько сделок в 2024?", chat_id=1, chat_type="private")).text
+        assert t.startswith("Извините, ответ не был готов за 80 секунд")
+    finally:
+        await hh.close()
+
+
+async def test_history_followups_and_new(h):
+    for q in ("Сколько сделок в 2024?", "а в 2025?"):
+        await h.send(q, chat_id=7, chat_type="private", user_id=7)
+    a = asks(h)
+    assert a[1]["history"] == [
+        {"role": "user", "content": "Сколько сделок в 2024?"},
+        {"role": "assistant", "content": AGENT_OK["answer"]},
+    ]
+    # another user in the same group has a separate context
+    await h.send(f"@{BOT_USERNAME} salom", user_id=8)
+    assert asks(h)[2]["history"] == []
+    # only the last 6 turns are kept
+    for i in range(8):
+        await h.send(f"q{i}", chat_id=7, chat_type="private", user_id=7)
+    assert len(asks(h)[-1]["history"]) == 12
+    t = one_text(await h.send("/new", chat_id=7, chat_type="private", user_id=7))
+    assert t == "Yangi suhbat boshlandi. Savolingizni yozing."
+    await h.send("yana", chat_id=7, chat_type="private", user_id=7)
+    assert asks(h)[-1]["history"] == []
+
+
+async def test_greeting_goes_to_agent(h):
+    out = await h.send("salom", chat_id=9, chat_type="private")
+    assert asks(h)[-1]["question"] == "salom"  # no static command list for smalltalk
+    assert "buyruqlar" not in one_msg(out).text
+
+
+async def test_start_buttons_ask_example(h):
+    m = one_msg(await h.send("/start", chat_id=555, chat_type="private"))
+    assert "/summary" not in m.text  # commands are secondary, not in the intro
+    kb = m.reply_markup.inline_keyboard
+    assert [row[0].text for row in kb] == list(EXAMPLES) and kb[1][0].callback_data == "ex:1"
+    before = len(h.session.sent())
+    await h.dp.feed_update(h.bot, make_callback("ex:1", chat_id=555, user_id=4242))
+    out = h.session.sent()[before:]
+    t = one_msg(out).text
+    assert t.startswith(f"<i>{html.escape(EXAMPLES[1], quote=False)}</i>\n\n")
+    assert any(isinstance(r, AnswerCallbackQuery) for r in h.session.requests)
+    assert asks(h)[-1]["question"] == EXAMPLES[1]
+    # bad callback data is ignored safely
+    before = len(h.session.sent())
+    await h.dp.feed_update(h.bot, make_callback("ex:99", chat_id=555))
+    assert h.session.sent()[before:] == []
+
+
 async def test_free_text_group_rules(h):
     # plain group chatter is ignored
     assert await h.send("salom hammaga") == []
-    # mention -> AI, mention stripped, text passed as data
-    t = one_text(await h.send(f"@{BOT_USERNAME} 2025 da eng katta region?"))
-    assert t == "AI javob: 2025 da eng katta region?"
-    # reply to bot -> AI
-    assert one_text(await h.send("yana?", reply_to_bot=True)) == "AI javob: yana?"
+    # mention -> agent, mention stripped, text passed as data; reply is threaded to the question
+    m = one_msg(await h.send(f"@{BOT_USERNAME} 2025 da eng katta region?"))
+    assert "q=2025 da eng katta region?" in m.text and m.reply_to_message_id
+    # reply to bot -> agent
+    assert "q=yana?" in one_text(await h.send("yana?", reply_to_bot=True))
 
 
-async def test_free_text_ai_down():
-    hh = Harness(ai_status=404)
-    try:
-        t = one_text(await hh.send(f"@{BOT_USERNAME} savol"))
-        assert t.startswith("Birja reyestri boti") and "Erkin savollar hozircha mavjud emas" in t
-        ai_calls = len([c for c in hh.backend_calls if c.url.path.endswith("ai/chat")])
-        await hh.send(f"@{BOT_USERNAME} yana savol")  # circuit open: no second backend call
-        assert len([c for c in hh.backend_calls if c.url.path.endswith("ai/chat")]) == ai_calls
-    finally:
-        await hh.close()
+async def test_any_chat_is_served_no_allow_list(h):
+    for cid, typ in ((-1009999, "supergroup"), (123, "private")):
+        assert one_text(await h.send("/summary 2025", chat_id=cid, chat_type=typ)).startswith("Jami aylanma")
+    assert await h.send("/chatid") == []  # no admin/setup commands any more
 
 
-async def test_unauthorized_chat():
-    hh = Harness(allowed=())
-    try:
-        t = one_text(await hh.send("/summary"))
-        assert t.startswith("Bu chat uchun ruxsat yo'q. Chat ID: -1001234567890")
-        assert not hh.backend_calls  # no data leaves
-        assert await hh.send("/summary") == []  # refusal cooldown, no spam
-        assert one_text(await hh.send("/chatid")).startswith(f"Chat ID: {GROUP_ID}")
-        assert await hh.send("oddiy gap") == []
-    finally:
-        await hh.close()
-
-
-async def test_rate_limit():
+async def test_rate_limit_per_user():
     hh = Harness(rate=3)
     try:
         for _ in range(3):
             assert one_text(await hh.send("/help")).startswith("Birja")
         assert one_text(await hh.send("/help")).startswith("So'rovlar juda ko'p")
         assert await hh.send("/help") == []  # warned once per window
-        # other chats are unaffected
+        # another user in the same group is unaffected
+        assert one_text(await hh.send("/help", user_id=9999)).startswith("Birja")
+        # example buttons share the budget and are always answered (no spinner)
+        n = len(hh.session.requests)
+        await hh.dp.feed_update(hh.bot, make_callback("ex:0", chat_id=GROUP_ID, user_id=4242))
+        new = hh.session.requests[n:]
+        assert any(isinstance(r, AnswerCallbackQuery) for r in new)
+        assert not [c for c in hh.backend_calls if c.url.path.endswith("agent/ask")]
+    finally:
+        await hh.close()
+
+
+async def test_rate_limit_per_day():
+    hh = Harness(rate=100, per_day=2)
+    try:
+        for _ in range(2):
+            one_text(await hh.send("/help"))
+        assert one_text(await hh.send("/help")).startswith("Kunlik so'rovlar limiti tugadi")
+    finally:
+        await hh.close()
+
+
+async def test_concurrency_cap():
+    hh = Harness(concurrency=2, agent_delay=0.2)
+    try:
+        t0 = time.perf_counter()
+        await asyncio.gather(*(hh.send("savol", chat_id=100 + i, chat_type="private", user_id=100 + i)
+                               for i in range(6)))
+        assert time.perf_counter() - t0 >= 0.55  # 6 questions / cap 2 x 0.2 s = 3 waves
     finally:
         await hh.close()
 
@@ -161,18 +335,5 @@ async def test_backend_down_generic_error():
     try:
         t = one_text(await hh.send("/summary 2025"))
         assert t == "Ma'lumot manbasi hozir javob bermayapti. Birozdan keyin qayta urinib ko'ring."
-    finally:
-        await hh.close()
-
-
-async def test_free_text_without_api_key_no_ai_call():
-    hh = Harness(ai_key="")
-    try:
-        t = one_text(await hh.send(f"@{BOT_USERNAME} savol"))
-        assert "Erkin savollar hozircha mavjud emas" in t
-        assert not [c for c in hh.backend_calls if c.url.path.endswith("ai/chat")]
-        # key is never sent on public data endpoints
-        await hh.send("/summary 2025")
-        assert all("x-api-key" not in c.headers for c in hh.backend_calls)
     finally:
         await hh.close()

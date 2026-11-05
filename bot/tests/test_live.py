@@ -15,7 +15,7 @@ from aiogram.methods import SendDocument, SendMessage
 from app.backend import BackendClient
 from app.config import Settings
 from app.main import build_dispatcher
-from conftest import FAKE_TOKEN, GROUP_ID, FakeSession, make_update
+from conftest import FAKE_TOKEN, FakeSession, make_update
 
 LIVE = os.getenv("LIVE_BACKEND")
 pytestmark = pytest.mark.skipif(not LIVE, reason="set LIVE_BACKEND to run against the real backend")
@@ -28,12 +28,13 @@ CASES = [
     ("/broker BK999", "Broker BK999 topilmadi."),
     ("/deal 1", None),  # exists or "topilmadi" — both fine
     ("/export 01.01.2025 02.01.2025 bajarilgan", "FILE"),
+    ("@birja_reyestr_bot 2025-yilda jami nechta bitim tuzilgan?", None),
+    ("@birja_reyestr_bot Сколько брокеров в реестре?", None),
 ]
 
 
 async def test_live_smoke():
-    settings = Settings(bot_token=FAKE_TOKEN, backend_url=LIVE, allowed_chat_ids=frozenset({GROUP_ID}),
-                        rate_limit_per_min=1000)
+    settings = Settings(bot_token=FAKE_TOKEN, backend_url=LIVE, rate_limit_per_min=1000)
     backend = BackendClient(LIVE, timeout=60)
     session = FakeSession()
     bot = Bot(FAKE_TOKEN, session=session)

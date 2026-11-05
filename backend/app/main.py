@@ -109,3 +109,18 @@ async def health():
 
 
 app.include_router(api_router, prefix=settings.api_v1_str)
+
+
+# --- Static frontend (Next.js `output: export`) on the same origin ---------------------------
+# Mounted LAST so /api/v1/*, /docs, /redoc and /health keep priority. No X-Frame-Options is set,
+# so the Telegram Mini App can embed the dashboard.
+import os as _os
+from pathlib import Path as _Path
+
+from fastapi.staticfiles import StaticFiles as _StaticFiles
+
+_FRONTEND_DIST = _Path(
+    _os.getenv("FRONTEND_DIST", str(_Path(__file__).resolve().parents[2] / "frontend" / "out"))
+)
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", _StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")

@@ -37,3 +37,28 @@ body { background: #F5F6F8; font-feature-settings: "tnum" 1, "cv11" 1; -webkit-f
   .btn:hover { background: #1A2738; }
 }
 @keyframes sh { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* ---------- Telegram Mini App (html.tg is set by TelegramShell when WebApp.initData is present) ---------- */
+html.tg { --tg-bg: #FFFFFF; --tg-bg2: #F5F6F8; --tg-text: #0B1726; --tg-hint: #6B7685; --tg-link: #1F3B73; --tg-btn: #1F3B73; --tg-btn-text: #FFFFFF; }
+html.tg body { background: var(--tg-bg2); color: var(--tg-text); }
+html.tg .app-sidebar { display: none; }
+html.tg .app-main { padding: 12px 12px calc(72px + env(safe-area-inset-bottom)); max-width: none; }
+html.tg .tg-tabbar { background: var(--tg-bg); border-color: color-mix(in srgb, var(--tg-hint) 25%, transparent); padding-bottom: env(safe-area-inset-bottom); }
+html.tg .tg-tab-active { color: var(--tg-btn); }
+html.tg .chat-composer { bottom: calc(56px + env(safe-area-inset-bottom)); }
+html.tg .card, html.tg .bg-white, html.tg .field, html.tg .chip { background-color: var(--tg-bg); }
+html.tg .text-ink { color: var(--tg-text); }
+html.tg .text-ink-2, html.tg .text-ink-3, html.tg .eyebrow { color: var(--tg-hint); }
+html.tg .card, html.tg .border-line, html.tg .field, html.tg .chip { border-color: color-mix(in srgb, var(--tg-hint) 22%, transparent); }
+html.tg .bg-brand, html.tg .btn, html.tg .pg[aria-current="page"] { background-color: var(--tg-btn); color: var(--tg-btn-text); }
+html.tg .text-brand { color: var(--tg-link); }
+html.tg .bg-canvas, html.tg .from-canvas { --tw-gradient-from: var(--tg-bg2) var(--tw-gradient-from-position); }
+html.tg .via-canvas { --tw-gradient-via: var(--tg-bg2) var(--tw-gradient-via-position); --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-via), var(--tw-gradient-to); }
+html.tg-dark table.reg th { background: var(--tg-bg2); border-color: color-mix(in srgb, var(--tg-hint) 25%, transparent); color: var(--tg-hint); }
+html.tg-dark table.reg td { color: var(--tg-text); border-color: color-mix(in srgb, var(--tg-hint) 18%, transparent); }
+html.tg-dark table.reg tbody tr:hover td { background: color-mix(in srgb, var(--tg-hint) 10%, transparent); }
+html.tg-dark .bk, html.tg-dark .seg { background: var(--tg-bg2); color: var(--tg-text); }
+html.tg-dark .skel { background: linear-gradient(90deg, var(--tg-bg2), var(--tg-bg), var(--tg-bg2)); background-size: 200% 100%; }
+html.tg-dark .md-table th { background: var(--tg-bg2); }
+.md-code { font-family: var(--font-mono), ui-monospace, monospace; font-size: .88em; background: #EEF0F3; padding: 1px 5px; border-radius: 4px; }
+html.tg-dark .md-code, html.tg-dark .md pre { background: var(--tg-bg2); }

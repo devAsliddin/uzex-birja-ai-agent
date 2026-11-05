@@ -11,28 +11,31 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import BotCommand
 
+from . import webapp
 from .backend import BackendClient
 from .config import Settings, load_settings
 from .handlers import State, build_router
-from .middlewares import AccessMiddleware, RateLimitMiddleware
+from .middlewares import RateLimitMiddleware
 
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
 COMMANDS = [
+    BotCommand(command="start", description="Savol berish / Задать вопрос"),
+    BotCommand(command="new", description="Yangi suhbat / Новый диалог"),
     BotCommand(command="summary", description="Jami aylanma: /summary [yil]"),
     BotCommand(command="deal", description="Bitim kartochkasi: /deal <raqam>"),
     BotCommand(command="broker", description="Broker profili: /broker BK001"),
     BotCommand(command="top_brokers", description="Top-10 broker: /top_brokers [yil]"),
     BotCommand(command="export", description="Fayl: /export DD.MM.YYYY DD.MM.YYYY [holat] [xlsx]"),
     BotCommand(command="help", description="Buyruqlar ro'yxati"),
-    BotCommand(command="chatid", description="Shu chat ID si"),
 ]
 
 
-def build_dispatcher(settings: Settings, backend: BackendClient) -> Dispatcher:
-    dp = Dispatcher(backend=backend, settings=settings, bot_state=State())
-    dp.message.outer_middleware(AccessMiddleware(settings.allowed_chat_ids))
-    dp.message.outer_middleware(RateLimitMiddleware(settings.rate_limit_per_min))
+def build_dispatcher(settings: Settings, backend: BackendClient, state: State | None = None) -> Dispatcher:
+    dp = Dispatcher(backend=backend, settings=settings, bot_state=state or State(settings.agent_concurrency))
+    limiter = RateLimitMiddleware(settings.rate_limit_per_min, settings.rate_limit_per_day)
+    dp.message.outer_middleware(limiter)
+    dp.callback_query.outer_middleware(limiter)  # example buttons share the same per-user budget
     dp.include_router(build_router())
     return dp
 
@@ -47,20 +50,26 @@ def _setup_logging() -> None:
 
 
 async def run(settings: Settings) -> None:
-    backend = BackendClient(settings.backend_url, ai_api_key=settings.ai_api_key, timeout=settings.http_timeout)
+    backend = BackendClient(settings.backend_url, timeout=settings.http_timeout)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=None))
-    dp = build_dispatcher(settings, backend)
+    state = State(settings.agent_concurrency)
+    dp = build_dispatcher(settings, backend, state)
     log = logging.getLogger("bot")
+    watcher: asyncio.Task | None = None
     try:
         me = await bot.get_me()
-        log.info("started as @%s; backend=%s; allowed chats=%d", me.username, settings.backend_url,
-                 len(settings.allowed_chat_ids))
+        log.info("started as @%s; backend=%s; public; agent cap=%d; limits %d/min %d/day per user",
+                 me.username, settings.backend_url, settings.agent_concurrency,
+                 settings.rate_limit_per_min, settings.rate_limit_per_day)
         try:
             await bot.set_my_commands(COMMANDS)
         except Exception:  # noqa: BLE001 - cosmetic, not fatal
             log.warning("set_my_commands failed")
-        await dp.start_polling(bot, allowed_updates=["message"], handle_signals=True)
+        watcher = asyncio.create_task(webapp.watch(bot, state, settings.webapp_url, settings.webapp_url_file))
+        await dp.start_polling(bot, allowed_updates=["message", "callback_query"], handle_signals=True)
     finally:
+        if watcher:
+            watcher.cancel()
         await backend.close()
         await bot.session.close()
 
@@ -80,9 +89,6 @@ def main() -> int:
         print("BOT_TOKEN formati noto'g'ri (kutilgan: 123456:ABC...). / BOT_TOKEN format is invalid.",
               file=sys.stderr)
         return 2
-    if not settings.allowed_chat_ids:
-        print("Ogohlantirish: ALLOWED_CHAT_IDS bo'sh — faqat /chatid ishlaydi. Guruh ID sini .env ga yozing.",
-              file=sys.stderr)
     try:
         asyncio.run(run(settings))
     except KeyboardInterrupt:

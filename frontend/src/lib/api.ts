@@ -1,4 +1,5 @@
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api/v1").replace(/\/$/, "");
+// Empty/unset -> same-origin relative /api/v1 (static export served next to the API, also inside Telegram).
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "/api/v1").replace(/\/$/, "");
 
 export type Currency = "UZS" | "USD";
 
@@ -101,3 +102,63 @@ export const api = {
   broker: (code: string) => get<BrokerProfile>(`/brokers/${encodeURIComponent(code)}`),
   exportUrl: (f: DealFilters, format: "csv" | "xlsx") => `${API_URL}/export/deals${qs({ ...dealParams(f), format })}`,
 };
+
+// ---- AI agent (POST /agent/ask, public) ------------------------------------
+export type AgentLang = "ru" | "uz";
+export type AgentStatus = "ok" | "no_data" | "error";
+export type AgentCell = string | number | boolean | null;
+export interface AgentTurn { role: "user" | "assistant"; content: string }
+export interface AgentAnswer {
+  answer: string;
+  language: AgentLang;
+  status: AgentStatus;
+  sql: string[];
+  columns: string[];
+  rows: AgentCell[][];
+  row_count: number;
+  basis: string;
+  model: string;
+  latency_ms: number;
+  /** Optional follow-up questions proposed by the agent. */
+  suggestions: string[];
+}
+
+/** Ask the agent (with the last turns for follow-ups). Aborts after `timeoutMs` (default 85 s) or when `signal` fires. */
+export async function ask(question: string, opts: { signal?: AbortSignal; timeoutMs?: number; history?: AgentTurn[] } = {}): Promise<AgentAnswer> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(new DOMException("timeout", "TimeoutError")), opts.timeoutMs ?? 85_000);
+  const onAbort = () => ctrl.abort(opts.signal?.reason);
+  opts.signal?.addEventListener("abort", onAbort);
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/agent/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ question, language: "auto", history: opts.history ?? [] }),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    if (ctrl.signal.aborted) throw new ApiError(408, "timeout");
+    throw new ApiError(0, e instanceof Error ? e.message : "network");
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onAbort);
+  }
+  if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
+  const d = (await res.json()) as Partial<AgentAnswer>;
+  return {
+    answer: String(d.answer ?? ""),
+    language: d.language === "ru" ? "ru" : "uz",
+    status: d.status === "ok" || d.status === "no_data" ? d.status : "error",
+    sql: Array.isArray(d.sql) ? d.sql.map(String) : [],
+    columns: Array.isArray(d.columns) ? d.columns.map(String) : [],
+    rows: Array.isArray(d.rows) ? d.rows.filter(Array.isArray) : [],
+    row_count: typeof d.row_count === "number" ? d.row_count : Array.isArray(d.rows) ? d.rows.length : 0,
+    basis: String(d.basis ?? ""),
+    model: String(d.model ?? ""),
+    latency_ms: typeof d.latency_ms === "number" ? d.latency_ms : 0,
+    suggestions: Array.isArray(d.suggestions)
+      ? d.suggestions.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map((x) => x.trim().slice(0, 200)).slice(0, 4)
+      : [],
+  };
+}

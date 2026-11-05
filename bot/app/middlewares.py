@@ -1,4 +1,4 @@
-"""Access control + per-user rate limit (outer middlewares on messages)."""
+"""Per-user rate limit (outer middleware on messages). The bot is public: no access control by design."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 log = logging.getLogger("bot.access")
 
@@ -33,36 +33,9 @@ async def is_addressed(message: Message, bot: Bot) -> bool:
     return bool(me.username) and f"@{me.username.lower()}" in text.lower()
 
 
-class AccessMiddleware(BaseMiddleware):
-    """PUBLIC_MODE=true: everyone is served. Otherwise only `allowed` chat ids."""
-
-    def __init__(self, allowed: frozenset[int], refusal_cooldown: float = 60.0, public: bool = False) -> None:
-        self.allowed = allowed
-        self.public = public
-        self.cooldown = refusal_cooldown
-        self._last_refusal: dict[int, float] = {}
-
-    async def __call__(
-        self,
-        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
-        event: Message,
-        data: dict[str, Any],
-    ) -> Any:
-        chat_id = event.chat.id
-        if self.public or chat_id in self.allowed:
-            return await handler(event, data)
-        bot: Bot = data["bot"]
-        text = (event.text or "").strip()
-        if text.split("@")[0].split(" ")[0] == "/chatid":
-            return await handler(event, data)  # setup helper works everywhere
-        if not await is_addressed(event, bot):
-            return None
-        log.warning("denied chat=%s type=%s", chat_ref(chat_id), event.chat.type)
-        now = time.monotonic()
-        if now - self._last_refusal.get(chat_id, -1e9) >= self.cooldown:
-            self._last_refusal[chat_id] = now
-            await event.answer(f"Bu chat uchun ruxsat yo'q. Chat ID: {chat_id}. Administratorga yuboring.")
-        return None
+LIMIT_DAY = "Kunlik so'rovlar limiti tugadi. / Дневной лимит вопросов исчерпан."
+LIMIT_MIN = ("So'rovlar juda ko'p. 1 daqiqadan keyin qayta urinib ko'ring. / "
+             "Слишком много запросов, повторите через минуту.")
 
 
 class RateLimitMiddleware(BaseMiddleware):
@@ -82,16 +55,18 @@ class RateLimitMiddleware(BaseMiddleware):
         self._warned: dict[int, float] = {}
 
     @staticmethod
-    def _key(event: Message) -> int:
-        return event.from_user.id if event.from_user else event.chat.id
+    def _key(event: Message | CallbackQuery) -> int:
+        if event.from_user:
+            return event.from_user.id
+        return event.message.chat.id if isinstance(event, CallbackQuery) and event.message else event.chat.id
 
     async def __call__(
         self,
-        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
-        event: Message,
+        handler: Callable[[Any, dict[str, Any]], Awaitable[Any]],
+        event: Message | CallbackQuery,
         data: dict[str, Any],
     ) -> Any:
-        if not await is_addressed(event, data["bot"]):
+        if isinstance(event, Message) and not await is_addressed(event, data["bot"]):
             return await handler(event, data)
         key = self._key(event)
         now = time.monotonic()
@@ -103,15 +78,15 @@ class RateLimitMiddleware(BaseMiddleware):
         if len(q) >= self.per_minute or len(qd) >= self.per_day:
             daily = len(qd) >= self.per_day
             log.info("rate-limited user=%s daily=%s", chat_ref(key), daily)
-            if now - self._warned.get(key, -1e9) >= self.window:
+            warn = now - self._warned.get(key, -1e9) >= self.window
+            if isinstance(event, CallbackQuery):  # always answer the button so it stops spinning
+                if warn:
+                    self._warned[key] = now
+                await event.answer(LIMIT_DAY if daily else LIMIT_MIN, show_alert=False)
+                return None
+            if warn:
                 self._warned[key] = now
-                if daily:
-                    await event.answer("Kunlik so'rovlar limiti tugadi. / Дневной лимит вопросов исчерпан.")
-                else:
-                    await event.answer(
-                        "So'rovlar juda ko'p. 1 daqiqadan keyin qayta urinib ko'ring. / "
-                        "Слишком много запросов, повторите через минуту."
-                    )
+                await event.answer(LIMIT_DAY if daily else LIMIT_MIN)
             return None
         q.append(now)
         qd.append(now)

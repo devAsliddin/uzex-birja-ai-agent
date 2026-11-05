@@ -23,3 +23,5 @@ frontend/.env.local
 eval/results_*.json
 SARALASH_TALABLAR.md
 HISOBOT.md
+run/
+frontend/out/
