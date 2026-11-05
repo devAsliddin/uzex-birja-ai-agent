@@ -92,7 +92,7 @@ export default function TelegramShell({ children }: { children: ReactNode }) {
       // Desktop / web Telegram: open the Mini App full screen (Bot API 8.0+)
       try {
         const desktop = ["tdesktop", "macos", "web", "weba", "webk", "unigram"].includes(wa.platform ?? "");
-        if (desktop && wa.requestFullscreen && wa.isVersionAtLeast?.("8.0")) wa.requestFullscreen();
+        if (desktop && wa.requestFullscreen) wa.requestFullscreen();
       } catch { /* not supported */ }
       applyTheme(wa);
       wa.onEvent?.("themeChanged", onTheme);

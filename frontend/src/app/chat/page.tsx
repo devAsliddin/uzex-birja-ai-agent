@@ -320,6 +320,21 @@ export default function ChatPage() {
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(input); }
   };
+  const toggleFullscreen = () => {
+    try {
+      // Inside Telegram (Bot API 8.0+): native Mini App full screen
+      const wa = (window as unknown as { Telegram?: { WebApp?: { initData?: string; isFullscreen?: boolean; requestFullscreen?: () => void; exitFullscreen?: () => void } } }).Telegram?.WebApp;
+      if (wa?.initData && wa.requestFullscreen) {
+        if (wa.isFullscreen) wa.exitFullscreen?.();
+        else wa.requestFullscreen();
+        return;
+      }
+      // Normal browser: Fullscreen API
+      if (document.fullscreenElement) void document.exitFullscreen();
+      else void document.documentElement.requestFullscreen();
+    } catch { /* not supported */ }
+  };
+
   const reset = () => {
     const c = ctrl.current;
     ctrl.current = null;
@@ -336,8 +351,18 @@ export default function ChatPage() {
         <div className="flex items-center gap-2 min-w-0">
           <span className="eyebrow truncate">AI agent · UZEX 2022–2026</span>
         </div>
+        <button
+          type="button"
+          onClick={toggleFullscreen}
+          title="To'liq ekran / Полный экран"
+          aria-label="To'liq ekran"
+          className="ml-auto hidden md:inline-flex h-8 px-3 rounded-lg border border-line bg-white text-[13px] text-ink-2 hover:bg-[#F8F9FB] items-center gap-1.5 shrink-0"
+        >
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" /></svg>
+          To&apos;liq ekran
+        </button>
         {msgs.length > 0 && (
-          <button type="button" onClick={reset} className="ml-auto h-8 px-3 rounded-lg border border-line bg-white text-[13px] text-ink-2 hover:bg-[#F8F9FB] inline-flex items-center gap-1.5 shrink-0">
+          <button type="button" onClick={reset} className="md:ml-0 ml-auto h-8 px-3 rounded-lg border border-line bg-white text-[13px] text-ink-2 hover:bg-[#F8F9FB] inline-flex items-center gap-1.5 shrink-0">
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
             Yangi suhbat
           </button>
