@@ -26,7 +26,7 @@ async def test_help_and_start(h):
         for c in ("/summary", "/deal", "/broker", "/top_brokers", "/export", "/new"):
             assert c in t
     t = one_text(await h.send("/start", chat_id=555, chat_type="private"))
-    assert "2022–2026" in t and "o'zbek yoki rus" in t and "на русском или узбекском" in t
+    assert "2022–2026" in t and "ma'lumotlar asosida" in t and "строго по данным" in t
 
 
 async def test_summary_year(h):
@@ -127,11 +127,14 @@ async def test_agent_ok_private_with_source(h):
     assert m.parse_mode == "HTML"
     t = m.text
     answer, src = t.split("\n\n", 1)
-    assert answer == "2025-yilda 115 763 ta bitim tuzilgan."  # plain chat answer first
-    assert src.startswith("<blockquote expandable><b>Manba</b> · 1 ta qator\n") and src.endswith("</blockquote>")
-    assert "<b>Asos:</b> deals jadvali" in src
-    assert "<b>SQL:</b>\nSELECT COUNT(*) AS deals FROM deals WHERE deal_date &gt;= '2025-01-01'" in src
-    assert "<b>Natija:</b>\ndeals:\n115 763" in src
+    assert answer == "2025-yilda 115 763 ta bitim tuzilgan."  # plain answer first, number untouched
+    # short collapsed source: header with row count, basis line, then SQL; no result rows
+    assert src == (
+        "<blockquote expandable><b>Manba</b> · 1 ta qator\n"
+        "deals jadvali, 2025-yil, barcha holatlar | q=2025-yilda nechta bitim?\n"
+        "SQL: SELECT COUNT(*) AS deals FROM deals WHERE deal_date &gt;= '2025-01-01' AND deal_date &lt; '2026-01-01'"
+        "</blockquote>"
+    )
     assert "<pre>" not in t and "<code>" not in t  # not allowed inside a blockquote
     assert asks(h)[0] == {"question": "2025-yilda nechta bitim?", "language": "auto", "history": []}
 
@@ -144,10 +147,10 @@ async def test_agent_html_escaped_and_ru_labels():
     try:
         t = one_msg(await hh.send("Сколько сделок?", chat_id=1, chat_type="private")).text
         assert t.startswith(html.escape("<b>x</b> & <script>", quote=False))
-        assert "<b>Источник</b> · 21 строка" in t and "<b>Основание:</b> &lt;i&gt;b&lt;/i&gt;" in t
-        assert "a&lt;: &lt;z&gt;; b: 2" in t
+        assert "<b>Источник</b> · 21 строка\n&lt;i&gt;b&lt;/i&gt;\nSQL: " in t
+        assert "&lt;z&gt;" not in t  # result rows are not repeated in Telegram
         assert "<script>" not in t and "<a href" not in t and "<i>" not in t
-        sql_part = t.split("<b>SQL:</b>\n")[1].split("\n<b>")[0]
+        sql_part = t.split("SQL: ")[1].split("</blockquote>")[0]
         assert len(html.unescape(sql_part)) <= 1500
         assert len(t) <= 4096
     finally:
@@ -163,25 +166,25 @@ async def test_agent_long_answer_fits_telegram_limit():
         await hh.close()
 
 
-async def test_agent_many_rows_no_table():
-    data = {**AGENT_OK, "columns": ["broker", "turnover"], "rows": [[f"BK{i:03d}", i] for i in range(10)],
-            "row_count": 10}
-    hh = Harness(agent=data)
+async def test_agent_answer_readable_markdown():
+    ans = ("## Natija\n**Jami:** 115 763 ta bitim, 205 678 901 234,56 so'm.\n\n\n\n"
+           "- BK001 — 12,5%\n* BK017 — 9,1%\n2*3 = 6")
+    hh = Harness(agent={**AGENT_OK, "answer": ans})
     try:
-        t = one_msg(await hh.send("top brokerlar", chat_id=1, chat_type="private")).text
-        assert "10 ta qator" in t and "BK009" not in t  # > 5 rows: only the count
+        body = one_msg(await hh.send("savol", chat_id=1, chat_type="private")).text.split("<blockquote")[0]
+        assert body.rstrip() == (
+            "Natija\n<b>Jami:</b> 115 763 ta bitim, 205 678 901 234,56 so'm.\n\n"
+            "• BK001 — 12,5%\n• BK017 — 9,1%\n2*3 = 6"
+        )
     finally:
         await hh.close()
 
 
-async def test_agent_multi_column_rows():
-    data = {**AGENT_OK, "columns": ["broker", "region", "turnover"],
-            "rows": [["Broker One", "Toshkent", 123456789012.5], ["Broker Two", None, 7]], "row_count": 2}
-    hh = Harness(agent=data)
+async def test_agent_no_sql_no_rows_no_source_block():
+    hh = Harness(agent={**AGENT_OK, "sql": [], "basis": "", "rows": [], "row_count": 0})
     try:
-        t = one_msg(await hh.send("eng katta broker", chat_id=1, chat_type="private")).text
-        assert "broker: Broker One; region: Toshkent; turnover: 123 456 789 012.50" in t
-        assert "broker: Broker Two; region: —; turnover: 7" in t
+        t = one_msg(await hh.send("salom", chat_id=1, chat_type="private")).text
+        assert t == "2025-yilda 115 763 ta bitim tuzilgan."  # e.g. smalltalk: just the answer
     finally:
         await hh.close()
 
@@ -249,19 +252,21 @@ async def test_greeting_goes_to_agent(h):
     assert "buyruqlar" not in one_msg(out).text
 
 
-async def test_start_buttons_ask_example(h):
+async def test_start_only_app_button(h):
     m = one_msg(await h.send("/start", chat_id=555, chat_type="private"))
-    assert "/summary" not in m.text  # commands are secondary, not in the intro
-    kb = m.reply_markup.inline_keyboard
-    assert [row[0].text for row in kb] == list(EXAMPLES) and kb[1][0].callback_data == "ex:1"
+    t = m.text
+    assert "/summary" not in t and "/new" in t and "Bilmayman" in t and "Не знаю" in t and "SQL" in t
+    assert t.index("AI agent") < t.index("AI-агент")  # Uzbek first, then Russian
+    assert m.reply_markup is None  # no example-question buttons; no app URL yet -> no keyboard
+
+
+async def test_old_example_button_still_answers(h):
+    # buttons sent by an older /start keep working after the update
     before = len(h.session.sent())
     await h.dp.feed_update(h.bot, make_callback("ex:1", chat_id=555, user_id=4242))
-    out = h.session.sent()[before:]
-    t = one_msg(out).text
+    t = one_msg(h.session.sent()[before:]).text
     assert t.startswith(f"<i>{html.escape(EXAMPLES[1], quote=False)}</i>\n\n")
     assert any(isinstance(r, AnswerCallbackQuery) for r in h.session.requests)
-    assert asks(h)[-1]["question"] == EXAMPLES[1]
-    # bad callback data is ignored safely
     before = len(h.session.sent())
     await h.dp.feed_update(h.bot, make_callback("ex:99", chat_id=555))
     assert h.session.sent()[before:] == []

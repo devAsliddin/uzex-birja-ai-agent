@@ -9,10 +9,20 @@ def connect() -> paramiko.SSHClient:
     host = os.environ["VPS_HOST"]
     user = os.environ.get("VPS_USER", "root")
     password = os.environ["VPS_PASSWORD"]
-    c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # no known_hosts writes
-    c.connect(host, username=user, password=password, look_for_keys=False, allow_agent=False, timeout=30)
-    return c
+    import time
+    last = None
+    for attempt in range(6):  # the link to this VPS drops SYNs intermittently
+        c = paramiko.SSHClient()
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # no known_hosts writes
+        try:
+            c.connect(host, username=user, password=password, look_for_keys=False, allow_agent=False,
+                      timeout=20, banner_timeout=30, auth_timeout=30)
+            c.get_transport().set_keepalive(20)
+            return c
+        except (OSError, paramiko.SSHException) as e:
+            last = e
+            time.sleep(5 * (attempt + 1))
+    raise SystemExit(f"ssh connect failed: {type(last).__name__}")
 
 
 def run(c: paramiko.SSHClient, cmd: str, check: bool = True, timeout: int = 1800) -> str:

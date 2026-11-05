@@ -498,7 +498,7 @@ class AgentEngine:
         system = ANSWER_SYSTEM.format(lang_name=lang_name)
         answer_text = ""
         status = "ok"
-        tmpl = render_template(str(plan.get("answer_template", "") or ""), cols, rows_fmt)
+        tmpl = render_template(str(plan.get("answer_template", "") or ""), cols, _readable_rows(cols, raw_rows, lang))
         if tmpl and not check_grounding(tmpl, cols, rows_fmt[:MAX_ROWS_LLM] + raw_rows[:MAX_ROWS_LLM], question,
                                         [basis, sql_history[-1]]):
             answer_text = tmpl  # one LLM call total; every value comes straight from the rows
@@ -549,6 +549,28 @@ class AgentEngine:
 _PH = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
+_MONEY_COL = re.compile(r"(?i)uzs|usd|amount|total|sum|turnover|price|summa|aylanma|oborot")
+
+
+def _readable_rows(cols: list[str], rows: list[list[Any]], lang: str) -> list[list[Any]]:
+    """Template values: money as '8,69 trln so'm (aniq: ...)', other numbers exact with decimal comma."""
+    from app.agent.rules_sql import money1, n
+
+    out = []
+    for r in rows:
+        row = []
+        for i, v in enumerate(r):
+            col = cols[i] if i < len(cols) else ""
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and _MONEY_COL.search(col):
+                row.append(money1(v, lang, usd="usd" in col.lower()))
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                row.append(n(v, col))
+            else:
+                row.append(v)
+        out.append(row)
+    return out
+
+
 def render_template(tmpl: str, cols: list[str], rows_fmt: list[list[Any]]) -> str:
     """Fill {column} placeholders from row 0 and {rows} with a numbered list; '' if unusable."""
     tmpl = tmpl.strip()
@@ -570,7 +592,7 @@ def render_template(tmpl: str, cols: list[str], rows_fmt: list[list[Any]]) -> st
     def _list() -> str:
         lines = []
         for i, r in enumerate(rows_fmt[:MAX_ROWS_UI], 1):
-            lines.append(f"{i}) " + " — ".join(str(v) for v in r if v is not None))
+            lines.append(f"{i}. " + " — ".join(str(v) for v in r if v is not None))
         return "\n" + "\n".join(lines) + "\n"
 
     out = _PH.sub(lambda m: _list() if m.group(1) == "rows" else str(cell(m.group(1))), tmpl)

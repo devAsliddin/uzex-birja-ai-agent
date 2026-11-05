@@ -109,14 +109,14 @@ def parse_date(s: str) -> date | None:
 
 # ---------------------------------------------------------------------------
 async def cmd_start(message: Message, bot_state: State) -> None:
-    rows = [[InlineKeyboardButton(text=q, callback_data=f"ex:{i}")] for i, q in enumerate(fm.EXAMPLES)]
+    kb = None
     url = bot_state.webapp_url
     if url:
-        # web_app buttons work only in private chats; groups get a plain link to the same app
+        # Only the Mini App button. web_app buttons work only in private chats; groups get a plain link.
         btn = (InlineKeyboardButton(text=fm.OPEN_APP, web_app=WebAppInfo(url=url))
                if message.chat.type == "private" else InlineKeyboardButton(text=fm.OPEN_APP, url=url))
-        rows.insert(0, [btn])
-    await message.answer(fm.START_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        kb = InlineKeyboardMarkup(inline_keyboard=[[btn]])
+    await message.answer(fm.START_TEXT, reply_markup=kb)
 
 
 async def cmd_help(message: Message) -> None:

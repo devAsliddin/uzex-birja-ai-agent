@@ -48,9 +48,10 @@ async def test_start_has_open_app_button():
     hh = Harness()
     try:
         out = [m for m in await hh.send("/start", chat_id=5, chat_type="private") if isinstance(m, SendMessage)]
-        assert all(b.web_app is None for row in out[0].reply_markup.inline_keyboard for b in row)  # no URL yet
+        assert out[0].reply_markup is None  # no URL yet: no keyboard at all
         hh.dp["bot_state"].webapp_url = "https://app.test/"
         out = [m for m in await hh.send("/start", chat_id=5, chat_type="private") if isinstance(m, SendMessage)]
+        assert len(out[0].reply_markup.inline_keyboard) == 1  # only the app button, no example questions
         first = out[0].reply_markup.inline_keyboard[0][0]
         assert first.text.startswith("Ilovani ochish") and first.web_app.url == "https://app.test/"
         out = [m for m in await hh.send("/start") if isinstance(m, SendMessage)]  # group: plain link

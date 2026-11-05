@@ -24,17 +24,53 @@ class NotFound(Exception):
 
 
 def n(v: Any, col: str = "") -> str:
+    """Exact number: space thousands, decimal comma."""
     if v is None:
         return "—"
     if isinstance(v, (int, float)):
-        return fmt_number(v, col)
+        return fmt_number(v, col).replace(".", ",")
     return str(v)
 
 
+_SCALES = {"uz": [(1e12, "trln"), (1e9, "mlrd"), (1e6, "mln")], "ru": [(1e12, "трлн"), (1e9, "млрд"), (1e6, "млн")]}
+
+
+def human(v: Any, lang: str) -> str | None:
+    """'8,69 trln' style short form for |v| >= 1 mln, else None."""
+    if not isinstance(v, (int, float)) or abs(v) < 1e6:
+        return None
+    for sc, word in _SCALES["uz" if lang == "uz" else "ru"]:
+        if abs(v) >= sc:
+            x = v / sc
+            return f"{x:.2f}".replace(".", ",") + f" {word}" if abs(x) < 10 else f"{x:.1f}".replace(".", ",") + f" {word}"
+    return None
+
+
+def money1(v: Any, lang: str, usd: bool = False, exact: bool = True) -> str:
+    """Money: human form + exact value in parentheses (exact only below 1 mln)."""
+    cur = "$" if usd else ("so‘m" if lang == "uz" else "сум")
+    h = human(v, lang)
+    if h is None:
+        return f"{n(v)} {cur}"
+    if not exact:
+        return f"{h} {cur}"
+    return f"{h} {cur} ({'aniq' if lang == 'uz' else 'точно'}: {n(v)} {cur})"
+
+
 def money(uzs: Any, usd: Any, lang: str, usd_first: bool = False) -> str:
-    som = "so‘m" if lang == "uz" else "сум"
-    a, b = f"{n(uzs)} {som}", f"{n(usd)} USD"
-    return f"{b} ({a})" if usd_first else f"{a} ({b})"
+    if usd is None:
+        return money1(uzs, lang)
+    if usd_first:
+        return f"{money1(usd, lang, usd=True)} ≈ {money1(uzs, lang, exact=False)}"
+    return f"{money1(uzs, lang)} ≈ {money1(usd, lang, usd=True, exact=False)}"
+
+
+def fmt_pct(v: Any) -> str:
+    if not isinstance(v, (int, float)):
+        return n(v)
+    short = f"{v:.1f}".replace(".", ",")
+    exact = n(v)
+    return f"{short}%" if short == exact else f"{short}% ({exact}%)"
 
 
 def ddmmyyyy(iso: Any) -> str:
@@ -305,9 +341,9 @@ def build(s: Slots, lang: str, qnorm: str) -> tuple[str, str, Any]:
                 if not base_v:
                     return None
                 if uz:
-                    return (f"{P} aylanmadagi ulushi — {n(pct)}%: {n(part)} so‘m / jami {n(base_v)} so‘m.\n"
+                    return (f"{P} aylanmadagi ulushi — {fmt_pct(pct)}: {money1(part, lang)} / jami {money1(base_v, lang, exact=False)}.\n"
                             f"Bekor qilingan bitimlar hisobga olinmadi, dollar bitimlari kurs bo'yicha.")
-                return (f"Доля в обороте {P} — {n(pct)}%: {n(part)} сум из {n(base_v)} сум.\n"
+                return (f"Доля в обороте {P} — {fmt_pct(pct)}: {money1(part, lang)} из {money1(base_v, lang, exact=False)}.\n"
                         f"Аннулированные не учитывались, долларовые сделки пересчитаны по курсу.")
             return sql, basis(br, bu), ans_sum
         sql = (f"SELECT (SELECT COUNT(*) FROM v_deals{_where(w)}) AS part_count, "
@@ -320,9 +356,9 @@ def build(s: Slots, lang: str, qnorm: str) -> tuple[str, str, Any]:
             if not base_n:
                 return None
             if uz:
-                return (f"{P} bunday bitimlar ulushi — {n(pct)}%: {n(part)} ta / jami {n(base_n)} ta bitimdan.\n"
+                return (f"{P} bunday bitimlar ulushi — {fmt_pct(pct)}: {n(part)} ta / jami {n(base_n)} ta bitimdan.\n"
                         f"Ulush bitimlar soni bo'yicha hisoblangan (barcha holatlar bazasida).")
-            return (f"Доля таких сделок {P} — {n(pct)}%: {n(part)} из {n(base_n)} сделок.\n"
+            return (f"Доля таких сделок {P} — {fmt_pct(pct)}: {n(part)} из {n(base_n)} сделок.\n"
                     f"Доля посчитана по количеству сделок (база — все сделки периода).")
         return sql, basis(br, bu), ans
 
@@ -363,7 +399,8 @@ def build(s: Slots, lang: str, qnorm: str) -> tuple[str, str, Any]:
             if row[0] is None:
                 return None
             som = "so‘m" if uz else "сум"
-            val = f"{n(row[0])} {som}" + (f" ({n(row[1])} USD)" if m == "avg_amount" and not native else "")
+            val = money1(row[0], lang) + (f" ≈ {money1(row[1], lang, usd=True, exact=False)}"
+                                          if m == "avg_amount" and not native and row[1] else "")
             cnt = row[-1]
             return (f"{P} {word_uz.lower()} — {val}.\nHisobda {n(cnt)} ta bitim." if uz
                     else f"{word_ru} {P}: {val}.\nУчтено сделок: {n(cnt)}.")
@@ -383,8 +420,8 @@ def build(s: Slots, lang: str, qnorm: str) -> tuple[str, str, Any]:
             main = _maxmin_text([x[1:] for x in r[:1]], lang, m, P)
             if len(r) > 1 and r[1][1] != r[0][1]:
                 d2 = r[1][1:]
-                main += (f"\nSo‘mdagi shartnomalar orasida: bitim № {d2[0]} — {n(d2[2])} so‘m ({ddmmyyyy(d2[1])})." if uz
-                         else f"\nСреди сделок в сумовых контрактах: сделка № {d2[0]} — {n(d2[2])} сум ({ddmmyyyy(d2[1])}).")
+                main += (f"\nSo‘mdagi shartnomalar orasida: bitim № {d2[0]} — {money1(d2[2], lang)} ({ddmmyyyy(d2[1])})." if uz
+                         else f"\nСреди сделок в сумовых контрактах: сделка № {d2[0]} — {money1(d2[2], lang)} ({ddmmyyyy(d2[1])}).")
             return main
         return sql, basis(br, bu), ans
 
@@ -429,7 +466,8 @@ def build(s: Slots, lang: str, qnorm: str) -> tuple[str, str, Any]:
             if not r:
                 return None
             som = "so‘m" if uz else "сум"
-            parts = [f"{n(x[1])} {som} / {unit_lbl(x[0], lang).replace('тонн', 'тонна').replace('литров', 'литр')} ({n(x[2])} USD; {n(x[3])} " + ("ta bitim)" if uz else "сделок)")
+            parts = [f"{money1(x[1], lang)} / {unit_lbl(x[0], lang).replace('тонн', 'тонна').replace('литров', 'литр')}"
+                     f" (≈ {n(round(x[2], 2)) if x[2] is not None else '—'} $; {n(x[3])} " + ("ta bitim)" if uz else "сделок)")
                      for x in r]
             if uz:
                 return (f"{P} o'rtacha tortilgan narx — {parts[0]}." +
@@ -585,14 +623,14 @@ def _top(s: Slots, lang: str, P: str, basis):
 
         def val(row):
             if by_sum:
-                return money(row[ci["total_uzs"]], None, lang).split(" (")[0] + (
+                return money1(row[ci["total_uzs"]], lang) + (
                     f", {n(row[ci['deals_count']])} ta bitim" if uz else f", {n(row[ci['deals_count']])} сделок")
             return (f"{n(row[ci['deals_count']])} ta bitim" if uz else f"{n(row[ci['deals_count']])} сделок")
         crit_ru = "по обороту (без аннулированных, доллары по курсу)" if by_sum else "по количеству сделок"
         crit_uz = "aylanma bo'yicha (bekor qilinganlarsiz, dollar kurs bo'yicha)" if by_sum else "bitimlar soni bo'yicha"
         least = s.order == "asc"
         if s.top_n > 1:
-            lines = "\n".join(f"{i}) {label(x)} — {val(x)}" for i, x in enumerate(r[: s.top_n], 1))
+            lines = "\n".join(f"{i}. {label(x)} — {val(x)}" for i, x in enumerate(r[: s.top_n], 1))
             if uz:
                 return f"{P} {crit_uz} {'eng past' if least else 'yetakchi'} {s.top_n} ta ({what_uz}):\n{lines}"
             return f"{'Последние' if least else 'Топ-'}{s.top_n} ({what_ru}) {P} {crit_ru}:\n{lines}"
@@ -711,8 +749,8 @@ def _lookup(s: Slots, lang: str, t: str):
             usd = d["currency"] == "Доллар США"
             cur = "USD" if usd else ("so‘m" if uz else "сум")
             som = "so‘m" if uz else "сум"
-            amt = f"{n(d['amount'])} {cur}" + (f" = {n(d['amount_uzs'])} {som} (kurs {n(d['usd_rate'])})" if usd and uz
-                                                else f" = {n(d['amount_uzs'])} {som} (курс {n(d['usd_rate'])})" if usd else "")
+            amt = money1(d['amount'], lang, usd=usd) + (f" = {money1(d['amount_uzs'], lang)} (kurs {n(d['usd_rate'])})" if usd and uz
+                                                else f" = {money1(d['amount_uzs'], lang)} (курс {n(d['usd_rate'])})" if usd else "")
             pay = ddmmyyyy(d["payment_date"]) if d["payment_date"] else ("to'lanmagan" if uz else "нет")
             dlv = ddmmyyyy(d["delivery_date"]) if d["delivery_date"] else ("yetkazilmagan" if uz else "нет")
             if uz:
@@ -741,12 +779,12 @@ def _lookup(s: Slots, lang: str, t: str):
             d = dict(zip(c, r[0]))
             cur = "USD" if d["currency"] == "Доллар США" else ("so‘m" if uz else "сум")
             if uz:
-                return (f"Shartnoma № {d['contract_no']}: {d['product_name']}, bazis narx {n(d['base_price'])} {cur} / {d['unit']}.\n"
+                return (f"Shartnoma № {d['contract_no']}: {d['product_name']}, bazis narx {money1(d['base_price'], lang, usd=d['currency'] == 'Доллар США')} / {d['unit']}.\n"
                         f"Sotuvchi: {d['seller_name']} (STIR {d['seller_inn']}); hudud: {d['region']}; "
                         f"{d['contract_type']}, {d['contract_form']}; to'lov muddati {n(d['payment_days'])} kun, "
                         f"yetkazish {n(d['delivery_days'])} kun; amal qiladi {ddmmyyyy(d['registration_date'])}–"
                         f"{ddmmyyyy(d['valid_until'])}; bitimlar: {n(d['deals_count'])} ta.")
-            return (f"Контракт № {d['contract_no']}: {d['product_name']}, базисная цена {n(d['base_price'])} {cur} за {d['unit']}.\n"
+            return (f"Контракт № {d['contract_no']}: {d['product_name']}, базисная цена {money1(d['base_price'], lang, usd=d['currency'] == 'Доллар США')} за {d['unit']}.\n"
                     f"Продавец: {d['seller_name']} (ИНН {d['seller_inn']}); регион: {d['region']}; "
                     f"{d['contract_type']}, {d['contract_form']}; срок оплаты {n(d['payment_days'])} дн., "
                     f"поставки {n(d['delivery_days'])} дн.; действует {ddmmyyyy(d['registration_date'])}–"
@@ -867,12 +905,12 @@ def cap(text: str) -> str:
 def _maxmin_text(r, lang, m, P):
     uz = lang == "uz"
     d = r[0]
-    cur = "USD" if d[3] == "Доллар США" else ("so‘m" if uz else "сум")
-    extra = "" if d[3] != "Доллар США" else f" ({n(d[4])} {'so‘m' if uz else 'сум'})"
+    is_usd = d[3] == "Доллар США"
+    amount = money1(d[2], lang, usd=is_usd) + (f" ≈ {money1(d[4], lang)}" if is_usd else "")
     if uz:
         kind = "eng yirik" if m == "max_deal" else "eng kichik"
-        return (f"{P} summa bo'yicha {kind} bitim — № {d[0]}: {n(d[2])} {cur}{extra}.\n"
+        return (f"{P} summa bo'yicha {kind} bitim — № {d[0]}: {amount}.\n"
                 f"Sana: {ddmmyyyy(d[1])}, tovar: {d[5]}, holat: {d[6]}; bekor qilingan bitimlar hisobga olinmadi.")
     kind = "Самая крупная" if m == "max_deal" else "Самая мелкая"
-    return (f"{kind} по сумме сделка {P} — № {d[0]}: {n(d[2])} {cur}{extra}.\n"
+    return (f"{kind} по сумме сделка {P} — № {d[0]}: {amount}.\n"
             f"Дата: {ddmmyyyy(d[1])}, товар: {d[5]}, состояние: {d[6]}; аннулированные не учитывались.")

@@ -6,6 +6,7 @@ Rule: first line = the direct answer, then short detail lines. No emoji, no gree
 from __future__ import annotations
 
 import html
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -127,13 +128,16 @@ EXAMPLES = (
 OPEN_APP = "Ilovani ochish / Открыть приложение"
 
 START_TEXT = (
-    "Men UZEX birja bitimlari (2022–2026) bo'yicha AI yordamchiman. Savolingizni o'zbek "
-    "yoki rus tilida oddiy so'z bilan yozing — javobni faqat bitimlar bazasidan olaman, manbasini (SQL va "
-    "natija) javob ostida ko'rsataman. Ma'lumot bo'lmasa, ochiq aytaman.\n\n"
-    "Я AI-помощник по биржевым сделкам UZEX (2022–2026). Пишите вопрос обычными словами "
-    "на русском или узбекском — отвечаю только по данным реестра и показываю источник. Можно уточнять: "
-    "«а в 2025?».\n\n"
-    "Misol savollar / Примеры — bosing / нажмите:"
+    "UZEX birja bitimlari (2022–2026) bo'yicha AI agent.\n"
+    "Savolga o'zbek yoki rus tilida javob beraman: aniq raqamlar, nomlar va kodlar — faqat ma'lumotlar asosida. "
+    "Ma'lumotlarda javob bo'lmasa, \"Bilmayman\" deb ochiq aytaman.\n"
+    "Har bir javob ostida manba bor (Manba: filtrlar, SQL, qatorlar soni).\n"
+    "Erkin savol bering va aniqlashtiring (masalan: \"2025-yilda-chi?\"). Yangi suhbat: /new\n\n"
+    "AI-агент по биржевым сделкам UZEX (2022–2026).\n"
+    "Отвечаю на русском или узбекском: точные цифры, названия и коды — строго по данным. "
+    "Если в данных ответа нет, прямо говорю «Не знаю».\n"
+    "Под каждым ответом источник (Источник: фильтры, SQL, число строк).\n"
+    "Задавайте вопросы свободно и уточняйте (например: «а в 2025?»). Новый диалог: /new"
 )
 
 
@@ -311,8 +315,6 @@ def top_brokers_text(data: dict, year: int | None) -> str:
 # --------------------------------------------------------------------------- agent answers (HTML)
 UZ_CYR = set("ўқғҳЎҚҒҲ")
 SQL_MAX = 1500
-TABLE_MAX_ROWS = 5
-CELL_MAX = 28
 
 
 def detect_lang(text: str) -> str:
@@ -360,34 +362,6 @@ def esc(x: Any) -> str:
     return html.escape("" if x is None else str(x), quote=False)
 
 
-def _cell(v: Any) -> str:
-    if v is None:
-        return "—"
-    if isinstance(v, bool):
-        return str(v)
-    if isinstance(v, int):
-        return fmt_int(v)
-    if isinstance(v, float):
-        if v.is_integer() and abs(v) < 1e15:
-            return fmt_int(int(v))
-        return f"{v:,.2f}".replace(",", " ")
-    s = str(v).replace("\n", " ")
-    return s if len(s) <= CELL_MAX else s[: CELL_MAX - 1] + "…"
-
-
-def _rows_text(columns: list[Any], rows: list[list[Any]]) -> str:
-    """Up to 5 result rows as 'column: value; column: value' lines (no monospace inside a quote)."""
-    n = max([len(columns)] + [len(r) for r in rows])
-    cols = [_cell(c) for c in columns] + [f"#{i + 1}" for i in range(len(columns), n)]
-    out = []
-    for r in rows:
-        vals = [_cell(v) for v in r] + [""] * (n - len(r))
-        out.append(vals[0] if n == 1 else "; ".join(f"{cols[i]}: {vals[i]}" for i in range(n)))
-    if n == 1:
-        out.insert(0, f"{cols[0]}:")
-    return "\n".join(out)
-
-
 def _lang(resp: dict, question: str) -> str:
     lang = resp.get("language")
     return lang if lang in LABELS else detect_lang(question)
@@ -407,38 +381,48 @@ def agent_reply(resp: dict, question: str) -> str:
     if not answer:
         return esc(L["error"])
     sql_list = [str(q).strip() for q in (resp.get("sql") or []) if str(q).strip()]
-    basis = str(resp.get("basis") or "").strip()
+    basis = " ".join(str(resp.get("basis") or "").split())
     rows = resp.get("rows") or []
-    columns = resp.get("columns") or []
     try:
         row_count = int(resp.get("row_count") if resp.get("row_count") is not None else len(rows))
     except (TypeError, ValueError):
         row_count = len(rows)
 
-    # Source goes into a collapsed (expandable) quote under the answer. Telegram does not allow
-    # pre/code entities inside a blockquote, so its content is plain escaped text (+ bold labels).
-    src: list[str] = []
-    if basis:
-        src.append(f"<b>{esc(L['basis'])}:</b> {esc(basis[:400])}")
-    if sql_list:
-        sql = ";\n\n".join(sql_list)
-        if len(sql) > SQL_MAX:
-            sql = sql[: SQL_MAX - 1] + "…"
-        src.append(f"<b>SQL:</b>\n{esc(sql)}")
-    if rows and len(rows) <= TABLE_MAX_ROWS and all(isinstance(r, (list, tuple)) for r in rows):
-        src.append(f"<b>{esc(L['result'])}:</b>\n{esc(_rows_text(list(columns), [list(r) for r in rows]))}")
-
+    # Short source block, collapsed (expandable quote) under the answer: "Manba · N ta qator", the basis line,
+    # then the SQL. Telegram does not allow pre/code inside a blockquote, so the SQL is plain escaped text.
     tail = ""
-    if src or row_count:
-        head = f"<b>{esc(L['source'])}</b> · {esc(L['rows'](row_count))}"
-        tail = "<blockquote expandable>" + "\n".join([head] + src) + "</blockquote>"
+    if basis or sql_list or row_count:
+        src = [f"<b>{esc(L['source'])}</b> · {esc(L['rows'](row_count))}"]
+        if basis:
+            src.append(esc(basis[:300]))
+        if sql_list:
+            sql = ";\n".join(sql_list)
+            if len(sql) > SQL_MAX:
+                sql = sql[: SQL_MAX - 1] + "…"
+            src.append(f"SQL: {esc(sql)}")
+        tail = "<blockquote expandable>" + "\n".join(src) + "</blockquote>"
     budget = MAX_MSG - len(tail) - 2
-    body = esc(answer)
+    body = readable(answer)
     cut = len(answer)
     while len(body) > budget and cut > 100:
         cut = int(cut * 0.9)
-        body = esc(answer[:cut]) + "…"
+        body = readable(answer[:cut]) + "…"
     return body + ("\n\n" + tail if tail else "")
+
+
+_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
+_BULLET = re.compile(r"^[ \t]*[-*][ \t]+", re.M)
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.M)
+
+
+def readable(text: str) -> str:
+    """Agent answer -> plain readable Telegram HTML: escaped, **bold** kept as bold, '- ' bullets as '• ',
+    '#' heading marks dropped, extra blank lines collapsed. Numbers and their spacing are left untouched."""
+    t = text.replace("\r\n", "\n").strip()
+    t = _HEADING.sub("", t)
+    t = _BULLET.sub("• ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return _BOLD.sub(r"<b>\1</b>", esc(t))
 
 
 def agent_failure(kind: str, question: str) -> str:

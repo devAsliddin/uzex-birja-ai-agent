@@ -12,14 +12,21 @@ plus a global concurrency cap.
   question, so follow-ups work ("а в 2025?", "uning brokeri kim?"). `/new` starts a fresh conversation.
 - While waiting, the bot shows "typing…" (re-sent every 4 s). Total limit 80 s (including queueing),
   then a short apology in the question's language.
-- Reply (HTML, every dynamic value escaped with `html.escape`): the answer as normal chat text, then a
-  collapsed `<blockquote expandable>` "Manba / Источник · N ta qator / N строк" with the basis, the SQL
-  (cut at 1500 chars) and, for at most 5 rows, the result rows. Telegram does not allow `pre`/`code`
-  inside a blockquote, so the SQL there is plain text. If Telegram rejects the HTML, the same text is resent
-  without markup. Labels follow the answer language (ru/uz).
+- Reply (HTML, every dynamic value escaped with `html.escape`): the answer first as plain readable lines
+  (`**bold**` kept as bold, `- ` bullets shown as `•`, `#` marks dropped, numbers left exactly as the backend
+  formatted them), then a short collapsed `<blockquote expandable>`: "Manba / Источник · N ta qator / N строк",
+  the basis line, and the SQL (cut at 1500 chars). Result rows are not repeated in Telegram (the web app shows
+  the table). Telegram does not allow `pre`/`code` inside a blockquote, so the SQL is plain text. If Telegram
+  rejects the HTML, the same text is resent without markup. Labels follow the answer language (ru/uz).
 - `status: "no_data"` answers ("Bilmayman — ...", "Не знаю — ...") are shown exactly as returned, with no source
   block. `status: "error"`, HTTP errors and timeouts produce a short localized apology (never backend text).
-- `/start`: a short intro in Uzbek and Russian plus 3 example questions as inline buttons; tapping one asks it.
+- `/start`: intro in Uzbek, then Russian (what the agent is, exact answers only from the data, "Bilmayman" when
+  the data has no answer, the Manba under each answer, free questions and follow-ups, `/new`), plus one
+  "Ilovani ochish / Открыть приложение" Mini App button when a web app URL is known (a plain link in groups).
+  The chat menu button "AI chat" opens the same Mini App. Example-question buttons were removed; taps on buttons
+  in old messages still work.
+- Mini App URL: `WEBAPP_URL` env, overridden by `run/webapp_url.txt` (tunnel watchdog), re-read every 60 s;
+  on change the default menu button is re-registered. No URL: nothing is shown.
 
 ## Commands (secondary)
 

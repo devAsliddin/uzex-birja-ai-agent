@@ -253,3 +253,16 @@ async def test_rules_smalltalk_static(seeded):
     eng = rules_engine()
     r = await eng.ask("Привет! Что ты умеешь?")
     assert r.status == "ok" and r.model == "static" and agent_engine.HELP_TEXT["ru"] in r.answer
+
+
+def test_human_money_format_is_grounded():
+    from app.agent.rules_sql import fmt_pct, money, money1
+
+    v_uzs, v_usd = 8693183269743.25, 647712516.25
+    text = money(v_uzs, v_usd, "uz")
+    assert text.startswith("8,69 trln so‘m (aniq: 8 693 183 269 743,25 so‘m)") and "647,7 mln $" in text
+    assert money1(352320.0, "ru") == "352 320 сум"
+    assert fmt_pct(6.7426) == "6,7% (6,74%)"
+    rows = [[v_uzs, v_usd]]
+    assert check_grounding("Оборот: " + money(v_uzs, v_usd, "ru"), ["total_uzs", "total_usd"], rows, "q") == []
+    assert check_grounding("Оборот: 9,1 трлн сум", ["total_uzs"], rows, "q") != []
