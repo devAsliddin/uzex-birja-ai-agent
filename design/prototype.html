@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Birja reyestri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: { sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'], mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'] },
+      colors: {
+        ink: { DEFAULT: '#0B1726', 2: '#3B4757', 3: '#6B7685' },
+        line: '#E4E7EC', canvas: '#F5F6F8',
+        brand: { DEFAULT: '#1F3B73', soft: '#E8EDF7' },
+        st: { done: '#10B981', wait: '#F59E0B', cancel: '#EF4444', new: '#06B6D4' }
+      }
+    }
+  }
+}
+</script>
+<style>
+  :root { color-scheme: light; }
+  body { background: #F5F6F8; font-feature-settings: "tnum" 1, "cv11" 1; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .card { background: #fff; border: 1px solid #E4E7EC; border-radius: 10px; }
+  .eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #6B7685; font-weight: 500; }
+  .nav-a { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:7px; color:#3B4757; font-size:14px; }
+  .nav-a:hover { background:#EEF0F3; }
+  .nav-a.active { background:#fff; color:#0B1726; font-weight:600; box-shadow: 0 0 0 1px #E4E7EC; }
+  .chip { display:inline-flex; align-items:center; gap:7px; height:32px; padding:0 12px; border-radius:999px; border:1px solid #E4E7EC; background:#fff; font-size:13px; color:#3B4757; cursor:pointer; user-select:none; transition: background .15s, border-color .15s; }
+  .chip[aria-pressed="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 9%, #fff); color:#0B1726; font-weight:500; }
+  .chip .dot { width:8px; height:8px; border-radius:50%; background: var(--c); }
+  .chip[aria-pressed="false"] .dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--c); }
+  .badge { display:inline-flex; align-items:center; gap:6px; padding:2px 9px 2px 7px; border-radius:999px; font-size:12.5px; font-weight:500; white-space:nowrap; background: color-mix(in srgb, var(--c) 12%, #fff); color: color-mix(in srgb, var(--c) 75%, #0B1726); }
+  .badge::before { content:""; width:6px; height:6px; border-radius:50%; background: var(--c); }
+  table.reg th { font-size:11.5px; letter-spacing:.06em; text-transform:uppercase; color:#6B7685; font-weight:500; text-align:left; padding:10px 12px; background:#FAFBFC; border-bottom:1px solid #E4E7EC; white-space:nowrap; position: sticky; top: 0; }
+  table.reg td { padding:9px 12px; border-bottom:1px solid #EEF0F3; font-size:13.5px; color:#0B1726; white-space:nowrap; }
+  table.reg tbody tr:hover td { background:#F8F9FB; }
+  .bk { font-family:"IBM Plex Mono", monospace; font-size:12.5px; padding:1px 6px; border-radius:4px; background:#F1F3F6; color:#3B4757; }
+  .bar-track { height:6px; border-radius:3px; background:#EEF0F3; overflow:hidden; }
+  .bar-fill { height:100%; border-radius:3px; background:#1F3B73; }
+  .field { height:36px; border:1px solid #E4E7EC; background:#fff; border-radius:8px; padding:0 12px; font-size:13.5px; color:#0B1726; }
+  .field:focus-within, .field:focus { outline:2px solid #1F3B73; outline-offset:-1px; }
+  .seg button { height:30px; padding:0 11px; flex-shrink:0; font-size:13px; color:#3B4757; border-radius:6px; }
+  .seg button[aria-pressed="true"] { background:#fff; color:#0B1726; font-weight:600; box-shadow:0 1px 2px rgba(11,23,38,.08), 0 0 0 1px #E4E7EC; }
+  .pg { min-width:32px; height:32px; border-radius:7px; font-size:13px; color:#3B4757; }
+  .pg[aria-current="page"] { background:#0B1726; color:#fff; font-weight:600; }
+  .pg:not([aria-current]):hover { background:#EEF0F3; }
+</style>
+</head>
+<body class="font-sans text-ink">
+<div class="min-h-screen lg:flex">
+
+  <!-- Sidebar -->
+  <aside class="lg:w-[232px] lg:shrink-0 lg:h-screen lg:sticky lg:top-0 border-b lg:border-b-0 lg:border-r border-line bg-canvas px-4 py-4 lg:py-6 flex lg:flex-col gap-4 items-center lg:items-stretch">
+    <div class="flex items-center gap-2.5 px-1">
+      <div class="w-8 h-8 rounded-md bg-ink text-white grid place-items-center text-[13px] font-semibold">TX</div>
+      <div class="leading-tight">
+        <div class="text-[14px] font-semibold">Birja reyestri</div>
+        <div class="text-[11.5px] text-ink-3">Tovar-xomashyo birjasi</div>
+      </div>
+    </div>
+    <nav class="flex lg:flex-col gap-1 lg:mt-6 ml-auto lg:ml-0 overflow-x-auto">
+      <a href="#dashboard" class="nav-a active" data-nav>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="6" rx="1"/><rect x="9" y="2" width="5" height="3" rx="1"/><rect x="9" y="7" width="5" height="7" rx="1"/><rect x="2" y="10" width="5" height="4" rx="1"/></svg>
+        <span>Dashboard</span></a>
+      <a href="#deals" class="nav-a" data-nav>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2.5 4h11M2.5 8h11M2.5 12h7"/></svg>
+        <span class="whitespace-nowrap">Bitimlar reyestri</span></a>
+      <a href="#brokers" class="nav-a" data-nav title="Keyingi sahifa: brokerlar reyestri">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.6-2.4 2.4-3.6 4.5-3.6s3.9 1.2 4.5 3.6M11 3.2a2.4 2.4 0 0 1 0 4.6M12.6 10.2c1 .6 1.6 1.7 1.9 3.3"/></svg>
+        <span class="whitespace-nowrap">Brokerlar reyestri</span></a>
+    </nav>
+    <div class="hidden lg:block mt-auto px-1 text-[12px] text-ink-3 leading-relaxed">
+      Ma'lumotlar: 01.01.2022 – 30.10.2026<br>
+      <span class="num">500 000</span> bitim · <span class="num">120</span> broker
+    </div>
+  </aside>
+
+  <main class="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 py-6 lg:py-8 max-w-[1400px]">
+
+    <!-- ============ DASHBOARD ============ -->
+    <section id="dashboard">
+      <header class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div class="eyebrow">Umumiy ko'rinish</div>
+          <h1 class="text-[26px] font-semibold tracking-tight mt-1">Dashboard</h1>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="seg flex gap-0.5 p-[3px] rounded-lg bg-[#EBEDF0] max-w-full overflow-x-auto" role="group" aria-label="Davr">
+            <button aria-pressed="true" data-year="all">Barchasi</button>
+            <button aria-pressed="false" data-year="2022">2022</button>
+            <button aria-pressed="false" data-year="2023">2023</button>
+            <button aria-pressed="false" data-year="2024">2024</button>
+            <button aria-pressed="false" data-year="2025">2025</button>
+            <button aria-pressed="false" data-year="2026">2026</button>
+          </div>
+          <div class="seg flex gap-0.5 p-[3px] rounded-lg bg-[#EBEDF0]" role="group" aria-label="Valyuta">
+            <button aria-pressed="true" data-cur="UZS">UZS</button>
+            <button aria-pressed="false" data-cur="USD">USD</button>
+          </div>
+        </div>
+      </header>
+
+      <!-- KPI -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mt-6">
+        <div class="card p-5">
+          <div class="eyebrow">Jami bitimlar hajmi</div>
+          <div class="mt-3 flex items-baseline gap-1.5"><span id="kpiVol" class="num text-[30px] font-semibold tracking-tight">196,3</span><span id="kpiVolUnit" class="text-[14px] text-ink-2">trln so'm</span></div>
+          <div id="kpiVolSub" class="mt-2 text-[12.5px] text-ink-3">2022 – 30.10.2026 oralig'ida</div>
+        </div>
+        <div class="card p-5">
+          <div class="eyebrow">Bitimlar soni</div>
+          <div class="mt-3"><span id="kpiCnt" class="num text-[30px] font-semibold tracking-tight">500 000</span></div>
+          <div id="kpiCntSub" class="mt-2 text-[12.5px] text-ink-3">Ijro etilgan: <span class="num text-ink-2">412 806</span> (82,6%)</div>
+        </div>
+        <div class="card p-5">
+          <div class="eyebrow">USD kursi · 30.10.2026</div>
+          <div class="mt-3 flex items-baseline gap-1.5"><span class="num text-[30px] font-semibold tracking-tight">12 084,30</span><span class="text-[14px] text-ink-2">so'm</span></div>
+          <div class="mt-2 text-[12.5px] text-ink-3"><span class="num text-[#B42318]">+18,62</span> oldingi kunga nisbatan</div>
+        </div>
+        <div class="card p-5">
+          <div class="eyebrow">Brokerlar soni</div>
+          <div class="mt-3"><span class="num text-[30px] font-semibold tracking-tight">120</span></div>
+          <div class="mt-2 text-[12.5px] text-ink-3">14 ta region · BK001–BK120</div>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="grid grid-cols-1 xl:grid-cols-[1.55fr_1fr] gap-4 mt-4">
+        <div class="card p-5 flex flex-col">
+          <div class="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 class="text-[15px] font-semibold">Aylanma dinamikasi</h2>
+              <p class="text-[12.5px] text-ink-3 mt-0.5">Yillar bo'yicha bitimlar summasi, <span id="dynUnit">trln so'm</span></p>
+            </div>
+            <div class="flex items-center gap-4 text-[12px] text-ink-3">
+              <span class="flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-sm bg-brand inline-block"></i>To'liq yil</span>
+              <span class="flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-sm inline-block" style="background:repeating-linear-gradient(135deg,#1F3B73 0 2px,#C9D3E8 2px 4px)"></i>2026 (10 oy)</span>
+            </div>
+          </div>
+          <div class="relative flex-1 min-h-[280px] mt-4"><canvas id="dyn"></canvas></div>
+        </div>
+
+        <div class="card p-5">
+          <div class="flex items-start justify-between">
+            <div>
+              <h2 class="text-[15px] font-semibold">Regionlar ulushi</h2>
+              <p class="text-[12.5px] text-ink-3 mt-0.5">Aylanmadagi ulush, sotuvchi regioni bo'yicha</p>
+            </div>
+          </div>
+          <ul id="regions" class="mt-4 space-y-3"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ DEALS REGISTRY ============ -->
+    <section id="deals" class="mt-10 scroll-mt-6">
+      <header class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div class="eyebrow">Reyestr</div>
+          <h2 class="text-[22px] font-semibold tracking-tight mt-1">Bitimlar reyestri</h2>
+        </div>
+        <button class="h-9 px-4 rounded-lg bg-ink text-white text-[13.5px] font-medium flex items-center gap-2 hover:bg-[#1A2738]">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8m0 0 3-3m-3 3L5 7M2.5 11.5v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.5"/></svg>
+          Excel'ga yuklash
+        </button>
+      </header>
+
+      <div class="card mt-4 overflow-hidden">
+        <!-- Toolbar -->
+        <div class="p-4 flex flex-col gap-3 border-b border-line">
+          <div class="flex flex-wrap items-center gap-3">
+            <label class="field flex items-center gap-2 min-w-[240px]">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#6B7685" stroke-width="1.5"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg>
+              <input type="text" value="01.10.2026" inputmode="numeric" class="num text-[13.5px] bg-transparent outline-none w-[84px]" aria-label="Boshlanish sanasi">
+              <span class="text-ink-3">—</span>
+              <input type="text" value="30.10.2026" inputmode="numeric" class="num text-[13.5px] bg-transparent outline-none w-[84px]" aria-label="Tugash sanasi">
+            </label>
+            <label class="field flex items-center gap-2 flex-1 min-w-[220px] max-w-[360px]">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#6B7685" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+              <input id="q" type="search" placeholder="Bitim raqami, tovar yoki broker kodi" class="bg-transparent outline-none w-full text-[13.5px]">
+            </label>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[12.5px] text-ink-3 mr-1">Holat:</span>
+            <button class="chip" style="--c:#10B981" aria-pressed="true" data-st="Исполнен"><span class="dot"></span>Исполнен <span class="num text-ink-3 text-[12px]" data-cnt></span></button>
+            <button class="chip" style="--c:#F59E0B" aria-pressed="true" data-st="Ждёт оплату"><span class="dot"></span>Ждёт оплату <span class="num text-ink-3 text-[12px]" data-cnt></span></button>
+            <button class="chip" style="--c:#06B6D4" aria-pressed="true" data-st="Новый"><span class="dot"></span>Новый <span class="num text-ink-3 text-[12px]" data-cnt></span></button>
+            <button class="chip" style="--c:#EF4444" aria-pressed="true" data-st="Аннулирован"><span class="dot"></span>Аннулирован <span class="num text-ink-3 text-[12px]" data-cnt></span></button>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="overflow-x-auto">
+          <table class="reg w-full border-collapse">
+            <thead>
+              <tr>
+                <th>Bitim №</th>
+                <th>Sana, vaqt</th>
+                <th>Tovar / region</th>
+                <th class="!text-right">Miqdor</th>
+                <th class="!text-right">Summa, so'm</th>
+                <th title="Sotuvchi brokeri → xaridor brokeri">Brokerlar</th>
+                <th>Holat</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div id="empty" class="hidden p-10 text-center text-[13.5px] text-ink-3">Tanlangan filtrlar bo'yicha bitim topilmadi. Holat filtrini yoki sanalarni o'zgartiring.</div>
+        </div>
+
+        <!-- Pagination -->
+        <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-line text-[13px] text-ink-2">
+          <div><span class="num">1–25</span> / <span class="num">9 412</span> bitim <span class="text-ink-3">(tanlangan davr)</span></div>
+          <nav class="flex items-center gap-1" aria-label="Sahifalar">
+            <button class="pg px-2" aria-label="Oldingi">‹</button>
+            <button class="pg num" aria-current="page">1</button>
+            <button class="pg num">2</button>
+            <button class="pg num">3</button>
+            <span class="px-1 text-ink-3">…</span>
+            <button class="pg num">377</button>
+            <button class="pg px-2" aria-label="Keyingi">›</button>
+          </nav>
+        </div>
+      </div>
+    </section>
+
+    <footer class="mt-10 pb-6 text-[12px] text-ink-3">Prototip · soxta (mock) ma'lumotlar · O'zbekiston tovar-xomashyo birjasi reyestri</footer>
+  </main>
+</div>
+
+<script>
+// ---------- formatting ----------
+const NB = ' ';
+const fmtInt = n => Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, NB);
+const fmtMoney = n => { const [i, d] = n.toFixed(2).split('.'); return fmtInt(+i) + ',' + d; };
+const fmtDec = (n, d = 1) => n.toFixed(d).replace('.', ',');
+
+// ---------- dashboard data (mock, deal counts from spec) ----------
+const YEARS = {
+  2022: { vol: 28.4, cnt: 84299,  done: 0.861, rate: 11225.5 },
+  2023: { vol: 34.9, cnt: 93985,  done: 0.848, rate: 12136.4 },
+  2024: { vol: 41.7, cnt: 106647, done: 0.833, rate: 12760.8 },
+  2025: { vol: 48.2, cnt: 115763, done: 0.819, rate: 12910.2 },
+  2026: { vol: 43.1, cnt: 99306,  done: 0.776, rate: 12040.1 },
+};
+const REGIONS = [
+  ['г. Ташкент', 23.8], ['Ташкентская обл.', 14.2], ['Навоийская обл.', 9.6], ['Кашкадарьинская обл.', 8.1],
+  ['Самаркандская обл.', 7.4], ['Ферганская обл.', 6.9], ['Бухарская обл.', 6.2], ['Андижанская обл.', 5.3],
+];
+const OTHER = 100 - REGIONS.reduce((s, r) => s + r[1], 0);
+
+let cur = 'UZS', year = 'all';
+
+function renderRegions() {
+  const ul = document.getElementById('regions');
+  const max = REGIONS[0][1];
+  ul.innerHTML = REGIONS.map(([n, p]) => `
+    <li>
+      <div class="flex items-baseline justify-between text-[13px]"><span>${n}</span><span class="num text-ink-2">${fmtDec(p)}%</span></div>
+      <div class="bar-track mt-1.5"><div class="bar-fill" style="width:${p / max * 100}%"></div></div>
+    </li>`).join('') + `
+    <li class="pt-1 flex items-baseline justify-between text-[13px] text-ink-3"><span>Boshqa 6 region</span><span class="num">${fmtDec(OTHER)}%</span></li>`;
+}
+
+function volIn(y) { // trln so'm -> chosen currency
+  const d = YEARS[y];
+  return cur === 'UZS' ? d.vol : d.vol * 1e12 / d.rate / 1e9; // mlrd USD
+}
+
+function renderKpi() {
+  const ys = year === 'all' ? Object.keys(YEARS) : [year];
+  const vol = ys.reduce((s, y) => s + volIn(y), 0);
+  const cnt = ys.reduce((s, y) => s + YEARS[y].cnt, 0);
+  const done = ys.reduce((s, y) => s + YEARS[y].cnt * YEARS[y].done, 0);
+  document.getElementById('kpiVol').textContent = fmtDec(vol);
+  document.getElementById('kpiVolUnit').textContent = cur === 'UZS' ? "trln so'm" : 'mlrd $';
+  document.getElementById('kpiVolSub').textContent = year === 'all' ? "2022 – 30.10.2026 oralig'ida"
+    : (year === '2026' ? '01.01 – 30.10.2026' : `01.01 – 31.12.${year}`) + (cur === 'USD' ? ', bitim sanasidagi kurs bo\'yicha' : '');
+  document.getElementById('kpiCnt').textContent = fmtInt(cnt);
+  document.getElementById('kpiCntSub').innerHTML = `Ijro etilgan: <span class="num text-ink-2">${fmtInt(done)}</span> (${fmtDec(done / cnt * 100)}%)`;
+  document.getElementById('dynUnit').textContent = cur === 'UZS' ? "trln so'm" : 'mlrd $';
+}
+
+// ---------- chart ----------
+let chart;
+function hatch(ctx) {
+  const c = document.createElement('canvas'); c.width = c.height = 8;
+  const g = c.getContext('2d');
+  g.fillStyle = '#C9D3E8'; g.fillRect(0, 0, 8, 8);
+  g.strokeStyle = '#1F3B73'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(-2, 10); g.lineTo(10, -2); g.moveTo(-2, 2); g.lineTo(2, -2); g.moveTo(6, 10); g.lineTo(10, 6); g.stroke();
+  return ctx.createPattern(c, 'repeat');
+}
+const valueLabels = {
+  id: 'valueLabels',
+  afterDatasetsDraw(c) {
+    const { ctx } = c; const meta = c.getDatasetMeta(0);
+    ctx.save(); ctx.font = '600 12.5px "IBM Plex Sans", sans-serif'; ctx.fillStyle = '#0B1726'; ctx.textAlign = 'center';
+    meta.data.forEach((bar, i) => ctx.fillText(fmtDec(c.data.datasets[0].data[i]), bar.x, bar.y - 8));
+    ctx.font = '400 11px "IBM Plex Sans", sans-serif'; ctx.fillStyle = '#6B7685';
+    meta.data.forEach((bar, i) => {
+      const y = Object.keys(YEARS)[i];
+      ctx.fillText(fmtInt(YEARS[y].cnt) + ' bitim', bar.x, c.chartArea.bottom + 34);
+    });
+    ctx.restore();
+  }
+};
+function renderChart() {
+  const el = document.getElementById('dyn');
+  const labels = Object.keys(YEARS);
+  const data = labels.map(volIn);
+  const pat = hatch(el.getContext('2d'));
+  const colors = labels.map(y => (year !== 'all' && y !== year) ? '#D5DBE5' : (y === '2026' ? pat : '#1F3B73'));
+  if (chart) { chart.data.datasets[0].data = data; chart.data.datasets[0].backgroundColor = colors; chart.update(); return; }
+  chart = new Chart(el, {
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderRadius: 4, maxBarThickness: 64 }] },
+    options: {
+      maintainAspectRatio: false, animation: false,
+      layout: { padding: { top: 22, bottom: 14 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: '#0B1726', padding: 10, titleFont: { family: 'IBM Plex Sans', weight: '600' }, bodyFont: { family: 'IBM Plex Sans' },
+          callbacks: { label: i => `${fmtDec(i.raw)} ${cur === 'UZS' ? "trln so'm" : 'mlrd $'} · ${fmtInt(YEARS[i.label].cnt)} bitim` } }
+      },
+      scales: {
+        x: { grid: { display: false }, border: { color: '#E4E7EC' }, ticks: { color: '#3B4757', font: { family: 'IBM Plex Sans', size: 12, weight: '500' } } },
+        y: { beginAtZero: true, grid: { color: '#EEF0F3' }, border: { display: false }, ticks: { color: '#6B7685', maxTicksLimit: 5, font: { family: 'IBM Plex Sans', size: 11 } } }
+      }
+    },
+    plugins: [valueLabels]
+  });
+}
+
+// ---------- deals mock ----------
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const pick = a => a[Math.floor(rnd() * a.length)];
+const PRODUCTS = [
+  ['Цемент М400 навалом', 'тонна', 640000], ['Пшеница продовольственная 3 класс', 'тонна', 3150000],
+  ['Хлопковое масло рафинированное', 'тонна', 16800000], ['Сахар белый кристаллический', 'тонна', 9450000],
+  ['Арматура А500С d12', 'тонна', 8900000], ['Полиэтилен J-150', 'тонна', 15200000],
+  ['Бензин АИ-92', 'тонна', 11400000], ['Дизельное топливо Евро-5', 'тонна', 12600000],
+  ['Мука пшеничная высший сорт', 'тонна', 4300000], ['Хлопковый шрот', 'тонна', 2750000],
+  ['Сжиженный газ пропан-бутан', 'тонна', 6100000], ['Медный катод М00к', 'тонна', 118000000],
+];
+const RG = ['г. Ташкент', 'Ташкентская обл.', 'Навоийская обл.', 'Кашкадарьинская обл.', 'Самаркандская обл.', 'Ферганская обл.', 'Бухарская обл.', 'Андижанская обл.', 'Наманганская обл.', 'Хорезмская обл.'];
+const STATUSES = [['Исполнен', 0.62, '#10B981'], ['Ждёт оплату', 0.2, '#F59E0B'], ['Новый', 0.11, '#06B6D4'], ['Аннулирован', 0.07, '#EF4444']];
+const ST_COLOR = Object.fromEntries(STATUSES.map(s => [s[0], s[2]]));
+const pickStatus = () => { let r = rnd(), a = 0; for (const [s, p] of STATUSES) { a += p; if (r < a) return s; } return 'Исполнен'; };
+const bk = () => 'BK' + String(1 + Math.floor(rnd() * 120)).padStart(3, '0');
+
+const DEALS = [];
+let no = 2610300457, t = Date.UTC(2026, 9, 30, 16, 42);
+for (let i = 0; i < 25; i++) {
+  const [name, unit, price] = pick(PRODUCTS);
+  const qty = [1, 2, 3, 5, 10, 20, 40, 60][Math.floor(rnd() * 8)];
+  const lot = price > 50e6 ? 1 : [5, 10, 20, 25, 60][Math.floor(rnd() * 5)];
+  const amount = qty * lot * price * (0.96 + rnd() * 0.12);
+  const d = new Date(t);
+  DEALS.push({
+    no: no--, date: d.toISOString().slice(0, 10).split('-').reverse().join('.'),
+    time: d.toISOString().slice(11, 16), name, qty: qty * lot, unit, amount,
+    sb: bk(), bb: bk(), region: pick(RG), status: pickStatus()
+  });
+  t -= (6 + Math.floor(rnd() * 70)) * 60000;
+}
+
+const active = new Set(STATUSES.map(s => s[0]));
+function renderDeals() {
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  const rows = DEALS.filter(d => active.has(d.status) &&
+    (!q || String(d.no).includes(q) || d.name.toLowerCase().includes(q) || d.sb.toLowerCase().includes(q) || d.bb.toLowerCase().includes(q)));
+  document.getElementById('rows').innerHTML = rows.map(d => `
+    <tr>
+      <td class="num mono text-[12.5px] text-ink-2">${d.no}</td>
+      <td><span class="num">${d.date}</span> <span class="num text-ink-3 ml-1">${d.time}</span></td>
+      <td class="max-w-[240px]"><div class="truncate" title="${d.name}">${d.name}</div><div class="text-[12px] text-ink-3 mt-0.5">${d.region}</div></td>
+      <td class="num text-right">${fmtInt(d.qty)} <span class="text-ink-3 font-sans text-[12px]">${d.unit === 'тонна' ? 'т' : d.unit}</span></td>
+      <td class="num text-right font-medium">${fmtMoney(d.amount)}</td>
+      <td><span class="bk">${d.sb}</span> <span class="text-ink-3">→</span> <span class="bk">${d.bb}</span></td>
+      <td><span class="badge" style="--c:${ST_COLOR[d.status]}">${d.status}</span></td>
+    </tr>`).join('');
+  document.getElementById('empty').classList.toggle('hidden', rows.length > 0);
+}
+// status counts for the selected period (mock, Oct 2026)
+document.querySelectorAll('.chip').forEach(c => {
+  const n = { 'Исполнен': 6102, 'Ждёт оплату': 1873, 'Новый': 958, 'Аннулирован': 479 }[c.dataset.st];
+  c.querySelector('[data-cnt]').textContent = fmtInt(n);
+  c.addEventListener('click', () => {
+    const on = c.getAttribute('aria-pressed') !== 'true';
+    c.setAttribute('aria-pressed', on); on ? active.add(c.dataset.st) : active.delete(c.dataset.st);
+    renderDeals();
+  });
+});
+document.getElementById('q').addEventListener('input', renderDeals);
+document.querySelectorAll('[data-year]').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('[data-year]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  year = b.dataset.year; renderKpi(); renderChart();
+}));
+document.querySelectorAll('[data-cur]').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('[data-cur]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  cur = b.dataset.cur; renderKpi(); renderChart();
+}));
+document.querySelectorAll('[data-nav]').forEach(a => a.addEventListener('click', () => {
+  document.querySelectorAll('[data-nav]').forEach(x => x.classList.toggle('active', x === a));
+}));
+renderRegions(); renderKpi(); renderDeals();
+document.fonts.ready.then(renderChart);
+</script>
+</body>
+</html>
