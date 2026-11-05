@@ -9,6 +9,8 @@ Barcha ma'lumotlar o'ylab topilgan (sintetik), davr: 2022-yil 3-yanvar — 2026-
 Havola: https://t.me/tiu_uzex_ai. Bot hamma uchun ochiq: ro'yxatdan o'tish, parol yoki admin ruxsati kerak emas.
 `/start` ni bosing va savolni oddiy matn bilan yozing.
 
+Bot ichida **Mini App** ham bor (menyu tugmasi): AI chat, Dashboard, Bitimlar va Brokerlar sahifalari Telegram ichida ochiladi.
+
 ### 1.1. Savol berish
 
 - Savolni **rus yoki o'zbek** tilida (lotin yoki kirill) yozing. Javob savol tilida qaytadi.
@@ -88,7 +90,7 @@ Buyruqlar LLM'siz, to'g'ridan-to'g'ri API'dan javob beradi.
 
 ## 2. Veb-ilova
 
-Manzil (lokal): http://localhost:3000. Login kerak emas.
+Ochiq manzil: https://45-92-173-47.sslip.io (lokal: http://localhost:3000). Login kerak emas. Xuddi shu sahifalar Telegram Mini App ichida ham ochiladi.
 
 | Sahifa | Nima bor |
 |---|---|
@@ -99,7 +101,7 @@ Manzil (lokal): http://localhost:3000. Login kerak emas.
 
 ## 3. REST API
 
-Bazaviy manzil: `http://127.0.0.1:8000/api/v1`. Swagger: `http://127.0.0.1:8000/docs`. Barcha o'qish endpointlari
+Bazaviy manzil: `http://127.0.0.1:8000/api/v1` (lokal); ochiq serverda `https://45-92-173-47.sslip.io` orqali. Swagger: `http://127.0.0.1:8000/docs`. Barcha o'qish endpointlari
 ochiq. Sanalar ISO formatda (`YYYY-MM-DD`), summalar so'mda (agar boshqasi ko'rsatilmagan bo'lsa). To'liq shartnoma:
 [API_CONTRACT.md](../API_CONTRACT.md).
 
@@ -121,6 +123,9 @@ curl.exe -X POST http://127.0.0.1:8000/api/v1/agent/ask -H "Content-Type: applic
   -d "{\"question\": \"2025-yilda nechta bitim tuzilgan?\", \"language\": \"auto\"}"
 ```
 
+So'rov maydonlari: `question` (1..1000 belgi, majburiy), `language` (`auto` | `ru` | `uz`), ixtiyoriy `history`
+(oxirgi suhbat qadamlari, `{role, content}`) va `conversation_id`. Limit: IP bo'yicha daqiqasiga 20 ta so'rov.
+
 Javob maydonlari:
 
 | Maydon | Ma'nosi |
@@ -131,7 +136,10 @@ Javob maydonlari:
 | `sql` | bajarilgan SQL so'rov(lar) ro'yxati |
 | `columns`, `rows`, `row_count` | natija ustunlari, qatorlari (cheklangan) va soni |
 | `basis` | asos: jadval, filtr, holat, valyuta, taxminlar |
+| `model` | javobni kim bergan: `rules` (qoida parseri, LLM'siz) yoki Gemini modeli nomi |
 | `latency_ms` | javob vaqti |
+| `tokens` | LLM token sarfi (qoida va kesh javoblarida 0; keshdan bo'lsa `cache_hit`) |
+| `conversation_id`, `suggestions` | suhbat identifikatori va keyingi savol takliflari |
 
 ### Bitimlar: `GET /deals`
 

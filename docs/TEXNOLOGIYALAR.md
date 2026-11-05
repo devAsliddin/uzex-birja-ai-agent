@@ -1,15 +1,15 @@
 # Texnologiyalar va usullar (forma maydoni uchun)
 
-Quyidagi matnni formaga to'g'ridan-to'g'ri qo'ying. `<...>` belgilarini eval natijasi bilan almashtiring.
+Quyidagi matnni formaga to'g'ridan-to'g'ri qo'ying.
 
 ---
 
-Stek: Python, FastAPI, SQLite (WAL, Alembic migratsiyalari), Telegram-bot aiogram 3, veb-ilova Next.js 14 + Tailwind, LLM — Gemini API, tekshiruv — pandas va pytest.
+Stek: Python, FastAPI, SQLite (faqat o'qish), Telegram-bot aiogram 3 + Mini App, veb Next.js 14 + Tailwind, Gemini API, pandas, pytest.
 
-Ma'lumot: 9 ta CSV (500 000 bitim) ETL orqali bazaga yuklandi: sanalar ISO formatga, mingliklar bo'shlig'i tozalandi, bo'sh qiymatlar NULL, regionlarning rus va lotin yozuvlari bitta kalitga keltirildi. Dollar shartnomalari bitim sanasidagi kurs bo'yicha so'mga o'giriladi, "Аннулирован" bitimlar aylanmaga qo'shilmaydi.
+Ma'lumot: 9 ta CSV (500 000 bitim) ETL bilan bazaga: sana ISO, mingliklar bo'shlig'i tozalandi, bo'sh qiymat NULL, regionlarning rus/lotin yozuvi bitta kalitga. Dollar bitimlar sanadagi kurs bilan so'mga o'giriladi, "Аннулирован" aylanmaga kirmaydi.
 
-Usul: text-to-SQL. LLM savolni (RU/UZ, lotin yoki kirill) bitta SELECT so'roviga aylantiradi. So'rov faqat o'qish rejimidagi bazada bajariladi (bitta SELECT tekshiruvi, timeout, xato bo'lsa qayta urinish). Barcha hisoblar SQL ichida, LLM faqat natija qatorlaridan javob yozadi. Keyin kod bilan grounding tekshiruvi: javobdagi har bir raqam, broker kodi va nom natija qatorlarida bo'lishi shart, aks holda javob rad etiladi. Ma'lumotda javob yo'q bo'lsa agent "Bilmayman — ma'lumotlarda bu haqida ma'lumot yo'q." / "Не знаю — в данных нет такой информации." deydi.
+Usul — gibrid agent. 1) Qoida asosidagi parser savolni (RU/UZ, lotin/kirill) tushunadi va parametrli SQL shablonini bajaradi — LLM chaqiruvisiz. 2) Tushunilmagan savol Gemini ga boradi: bitta so'rovda SQL va javob shabloni, raqamlar natija qatorlaridan kod bilan qo'yiladi. SQL faqat o'qish rejimida (bitta SELECT, timeout). 3) Grounding: javobdagi har raqam, kod va nom natijada bo'lishi shart. Javob yo'q yoki LLM xato bersa: "Bilmayman — ma'lumotlarda bu haqida ma'lumot yo'q." / "Не знаю — в данных нет такой информации."
 
-Manba: har javob ostida asos (jadval, filtr, holat, valyuta), bajarilgan SQL va natija qatorlari ko'rsatiladi — javobni qayta tekshirish mumkin. Javob savol tilida.
+Manba: har javob ostida asos (jadval, filtr, holat, valyuta), SQL va natija qatorlari. Javob savol tilida.
 
-Tekshiruv: backend kodidan mustaqil "oltin" to'plam — <GOLDEN_COUNT> ta RU/UZ savol, to'g'ri javoblar pandas bilan to'g'ridan-to'g'ri CSV dan hisoblangan, javobi yo'q "tuzoq" savollar ham bor. Natija: aniqlik <ACCURACY>%, gallyutsinatsiya <HALLUCINATIONS>, o'rtacha javob <AGENT_LATENCY> s. Bot smoke va stress (2 000 parallel so'rov) testlardan o'tgan.
+Tekshiruv: to'g'ri javoblar backenddan mustaqil, pandas bilan CSV dan hisoblangan. Oltin to'plam 78 savol: 76/78 (97,4%; 2 tasi oltin to'plamdagi AI-92 yozilishi xatosi, tekshirilgan), javobsiz tuzoqlar 12/12. Yangi parafraz to'plam 60 savol: 60/60. Gallyutsinatsiya 0. Javob p50 ~75 ms, p95 ~0,5 s; 20 parallel so'rov xatosiz.

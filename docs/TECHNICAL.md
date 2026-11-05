@@ -7,7 +7,8 @@ beruvchi AI-agent. Ma'lumotda javob yo'q joyda raqam, kompaniya yoki tovar aytis
 
 Shu sababli tizim "LLM bilimiga" emas, **bazadagi SQL natijasiga** tayanadi:
 
-- LLM faqat ikki ishni qiladi: savolni SQL ga aylantiradi va natija qatorlarini matnga o'giradi.
+- Ko'pchilik savollarga qoida asosidagi parser va tayyor SQL shablonlari javob beradi — LLM umuman chaqirilmaydi.
+- LLM (Gemini) faqat parser tushunmagan savollar uchun: SQL va joy belgilari bilan javob shablonini yozadi.
 - Raqamlarni LLM hisoblamaydi: barcha yig'indi, o'rtacha, foiz va reytinglar SQL ichida hisoblanadi.
 - Yakuniy matndagi har bir raqam va nom kod bilan (deterministik) natija qatorlariga solishtiriladi; mos kelmasa,
   javob qaytarilmaydi.
@@ -30,7 +31,8 @@ flowchart TB
     WEB --> AGENT
     REST --> DB[("SQLite WAL birja.db")]
     AGENT -->|"mode=ro, query_only, faqat SELECT"| DB
-    AGENT --> GEM["Gemini API"]
+    AGENT --> RULES["Qoida parseri + SQL shablonlari"]
+    AGENT -->|faqat tushunilmagan savol| GEM["Gemini API"]
     ETL["ETL: app.cli_import"] --> DB
     CSV["data/*.csv"] --> ETL
     EVAL["eval/: pandas oltin to'plam"] -.-> AGENT
@@ -41,8 +43,8 @@ flowchart TB
 | Backend API | `backend/app/api`, `crud`, `services` | FastAPI, SQLAlchemy 2 async, aiosqlite, Pydantic 2 | reyestr endpointlari, analitika keshi, eksport, rate-limit |
 | Migratsiyalar | `backend/alembic/versions/0001_initial_schema.py` | Alembic | TZ 3-bo'lim bo'yicha sxema, CHECK, FK, indekslar |
 | ETL | `backend/app/services/import_service.py`, `app/cli_import.py` | Python csv, executemany | 9 ta CSV → SQLite, idempotent |
-| Agent | `backend/app/agent/` (`db.py`, `grounding.py`, `prompts.py`) | Gemini API, sqlite3 | text-to-SQL, read-only bajarish, grounding |
-| Telegram-bot | `bot/app/` | aiogram 3, httpx | erkin savol → `/agent/ask`, buyruqlar → REST |
+| Agent | `backend/app/agent/` (`engine.py`, `rules.py`, `rules_sql.py`, `db.py`, `grounding.py`, `prompts.py`, `eval_runner.py`) | Python, sqlite3, Gemini API | qoida parseri + SQL shablonlari, Gemini text-to-SQL zaxirasi, read-only bajarish, grounding, javob keshi |
+| Telegram-bot | `bot/app/` | aiogram 3, httpx | erkin savol → `/agent/ask`, buyruqlar → REST, Mini App (AI chat, Dashboard, Bitimlar, Brokerlar) |
 | Veb-ilova | `frontend/src/` | Next.js 14 App Router, TypeScript, Tailwind, TanStack Query, Recharts | dashboard, reyestrlar, chat |
 | Baholash | `eval/` | pandas | backenddan mustaqil oltin javoblar va avtomatik baholash |
 
@@ -117,72 +119,70 @@ Import vaqti SQLite da ~3 daqiqa.
 | Bitim raqamlari uzluksiz emas | — | raqam mavjud emasligi — `404` / "Bilmayman", taxmin qilinmaydi |
 | Holatlar 30.10.2026 kuni oxiri bo'yicha | — | "oxirgi oy" kabi nisbiy davrlar ma'lumot oxiriga (2026-10) nisbatan talqin qilinadi |
 
-## 6. AI-agent quvuri (`POST /api/v1/agent/ask`)
+## 6. AI-agent quvuri (`POST /api/v1/agent/ask`) — gibrid
 
-So'rov: `{"question": "...", "language": "auto"}`.
+So'rov: `{"question": "...", "language": "auto|ru|uz", "history": [...], "conversation_id": "..."}`.
 Javob: `answer`, `status` (`ok` | `no_data` | `error`), `language`, `sql` (ro'yxat), `columns`, `rows`, `row_count`,
-`basis`, `latency_ms`.
+`basis`, `model` (`rules` yoki Gemini modeli), `latency_ms`, `tokens`, `conversation_id`, `suggestions`.
+Kod: `backend/app/agent/` — `engine.py` (orkestratsiya, kesh), `rules.py` (parser), `rules_sql.py` (SQL shablonlari va
+javob matni), `db.py` (read-only bajarish), `grounding.py` (tekshiruv), `prompts.py` (Gemini promptlari),
+`eval_runner.py` (baholash).
+
+Model zanjiri `.env` dagi `AI_MODEL_CHAIN` bilan beriladi:
+`rules,gemini:gemini-3.5-flash,gemini:gemini-3.5-flash-lite,gemini:gemini-3.1-flash-lite`. Birinchi bo'g'in — LLM'siz qoida
+dvigateli; keyingilari faqat u tushunmagan savollar uchun, navbatma-navbat (biri ishlamasa keyingisi).
 
 ```mermaid
-sequenceDiagram
-    participant U as Foydalanuvchi
-    participant A as Agent
-    participant G as Gemini
-    participant D as SQLite (read-only)
-    U->>A: savol (RU/UZ)
-    A->>A: tilni aniqlash
-    A->>G: SQL_SYSTEM (sxema, lug'at, 11 qoida) + savol
-    G-->>A: JSON {answerable, sql, basis}
-    alt answerable = false
-        A-->>U: no_data: "Bilmayman ..."
-    else
-        A->>A: validate_sql (bitta SELECT/WITH)
-        A->>D: bajarish (mode=ro, query_only, 15 s timeout, 200 qator)
-        alt SQL xatosi
-            A->>G: SQL_RETRY (xato matni bilan)
-        end
-        D-->>A: columns, rows
-        A->>G: ANSWER_SYSTEM + savol + basis + qatorlar (faqat ma'lumot)
-        G-->>A: JSON {no_data, answer}
-        A->>A: check_grounding (raqamlar, kodlar, nomlar)
-        A-->>U: answer + basis + SQL + rows
-    end
+flowchart TB
+    Q["Savol (RU/UZ, lotin/kirill)"] --> C{"Javob keshida bormi?"}
+    C -->|ha| OUT["answer + basis + SQL + rows"]
+    C -->|yo'q| R["1. Qoida parseri: normalizatsiya,<br/>slotlar: davr, region, holat, tovar,<br/>STIR/kod/raqam, metrika, guruhlash"]
+    R -->|ishonchli tushunildi| T["SQL shabloni (v_deals)<br/>0 ta LLM chaqiruvi"]
+    R -->|tushunilmadi| G["2. Gemini: 1 ta JSON chaqiruv<br/>intent, answerable, sql, basis, answer_template"]
+    G -->|answerable=false yoki xato| ND["no_data: Bilmayman"]
+    T --> X["Read-only bajarish:<br/>validate_sql, mode=ro, timeout, 200 qator"]
+    G --> X
+    X -->|bo'sh natija| ND
+    X --> F["Javob: raqam va nomlar natija<br/>qatorlaridan kod bilan qo'yiladi"]
+    F --> GR{"3. Grounding tekshiruvi"}
+    GR -->|o'tdi| OUT
+    GR -->|o'tmadi| ND
 ```
 
-1. **Til aniqlash.** Savolning yozuvi va so'zlari bo'yicha `uz` yoki `ru`; javob va "Bilmayman" matni shu tilda.
-2. **SQL yaratish.** Gemini barqaror tizim prompti (`prompts.py: SQL_SYSTEM`) bilan chaqiriladi — prefiks o'zgarmas, shuning
-   uchun Gemini implicit prompt caching ishlaydi. Promptda: jadvallar va ustunlar, qiymatlar lug'ati (holatlar, savdo turlari,
-   kategoriyalar, regionlar RU↔UZ, o'zbekcha oy nomlari) va 11 qoida (valyutalarni aralashtirmaslik, annulirlanganlarni
-   chiqarish, tovar nomini bir nechta o'zak bilan qidirish, hajmni birlik bo'yicha guruhlash, brokerni ikki marta sanamaslik,
-   kechikish ta'rifi, barcha hisob SQL ichida `ROUND(x, 2)` bilan, javob bo'lmasa `answerable: false`). Model faqat JSON qaytaradi:
-   `{"answerable", "sql", "basis"}`.
-3. **Javobsiz savolni erta aniqlash.** Davr 2022-01-03..2026-10-30 dan tashqarida, ustunlarda yo'q ma'lumot (foyda, ob-havo,
-   boshqa birjalar, prognoz, sabablar, shaxslar) yoki juda noaniq savol → `answerable: false` → `status: no_data`.
-4. **SQL validatsiyasi** (`db.py: validate_sql`): izohlar olib tashlanadi; faqat bitta statement; birinchi so'z `SELECT`
-   yoki `WITH`; taqiqlangan so'zlar (`ATTACH`, `PRAGMA`, `INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`,
-   `load_extension`, `writefile`, `readfile` va boshqalar) string literallardan tashqarida qidiriladi; uzunlik ≤ 8 000.
-5. **Read-only bajarish** (`db.py: run_query`): har so'rov uchun yangi `file:...?mode=ro` ulanish + `PRAGMA query_only=ON`;
-   progress handler orqali 15 s timeout; natija 200 qator bilan cheklanadi (`truncated` belgisi).
-6. **Qayta urinish.** SQL xato bersa, xato matni bilan `SQL_RETRY` prompti yuboriladi va tuzatilgan so'rov bajariladi.
-7. **Javob yozish** (`ANSWER_SYSTEM`): model faqat natija qatorlaridan foydalanadi, raqamlarni oldindan formatlangan holda
-   ko'chiradi (arifmetika yo'q), birinchi qatorda to'g'ridan-to'g'ri javob, valyuta har doim ko'rsatiladi. Qatorlar bo'sh
-   yoki savolga javob bermasa — `no_data: true`. Qatorlar ichidagi matn buyruq sifatida bajarilmaydi.
-8. **Deterministik grounding tekshiruvi** (`grounding.py: check_grounding`):
-   - javobdagi har bir son ajratib olinadi (mingliklar bo'shlig'i, vergul/nuqta kasr, sanalar qismlarga bo'linadi,
-     "млн/млрд/трлн/mln/mlrd/trln/ming" ko'paytuvchilari hisobga olinadi);
-   - har bir son natija qatoridagi qiymatga, savoldagi songa yoki qatorlar soniga teng bo'lishi shart (faqat yaxlitlash
-     farqi ruxsat etiladi: ko'rsatilgan kasr xonalari bo'yicha ±0.5 birlik, katta butun sonlar uchun ±1);
-   - `BK###` broker kodlari va qo'shtirnoqdagi nomlar natija qatorlarida yoki savolda bo'lishi shart;
-   - bitta ham mos kelmagan qiymat bo'lsa, javob rad etiladi va foydalanuvchiga uydirma raqam yetib bormaydi
-     (qayta yozish yoki `no_data`).
-9. **Natija.** `status: ok` bo'lsa — javob + asos + SQL + qatorlar; `no_data` bo'lsa — faqat
+1. **Kesh.** Normalizatsiya qilingan savol bo'yicha doimiy javob keshi (`agent_cache.sqlite`): takroriy savol 0 ta LLM
+   chaqiruvi bilan bir necha millisekundda qaytadi.
+2. **Til aniqlash.** Yozuv va so'zlar bo'yicha `uz` yoki `ru` (yoki so'rovdagi `language`); javob va "Bilmayman" shu tilda.
+3. **Qoida dvigateli** (`rules.py`, `rules_sql.py`). Matn normalizatsiya qilinadi (apostrof variantlari, `ё`→`е`, qo'shtirnoqlar),
+   so'ng slotlar ajratiladi: davr (yil, RU/UZ oy nomlari, chorak, sana oralig'i), region (RU/UZ), holat, tovar, bitim raqami,
+   STIR, broker kodi, metrika (soni, summa, o'rtacha, narx, hajm, ulush, top-N, ekstremum, kechikish va h.k.) va guruhlash.
+   Ishonch bilan tushunilgan savol tayyor SQL shabloniga (`v_deals` ustida, qiymatlar ekranlangan) aylanadi va javob matni
+   natija qatorlaridan deterministik yoziladi — **LLM chaqirilmaydi**. Davr ma'lumotdan tashqarida bo'lsa — darhol `no_data`.
+4. **Gemini (faqat tushunilmagan savollar).** Bitta JSON chaqiruv (`prompts.py: SQL_SYSTEM`, barqaror prefiks — implicit prompt
+   caching): `intent`, `answerable`, `sql`, `basis`, `answer_template`. Shablonda model raqam, nom, kod yoki sana yozmaydi —
+   faqat `{column_alias}`, `{rN_cM}`, `{rows}` joy belgilari; ularni kod natija qatorlaridan to'ldiradi. Promptda sxema,
+   qiymatlar lug'ati va 11 qoida (valyutani aralashtirmaslik, annulirlanganlarni chiqarish, tovar nomini bir nechta o'zak bilan
+   qidirish, brokerni ikki marta sanamaslik, barcha hisoblar SQL ichida va h.k.). Ma'lumotda javobi yo'q mavzu →
+   `answerable: false`. Gemini ishlamasa yoki xato bersa → "Bilmayman" (raqam taxmin qilinmaydi).
+5. **SQL validatsiyasi** (`db.py: validate_sql`): izohlar olib tashlanadi; faqat bitta statement; birinchi so'z `SELECT`/`WITH`;
+   taqiqlangan so'zlar (`ATTACH`, `PRAGMA`, `INSERT`, `UPDATE`, `DELETE`, `DROP`, `CREATE`, `ALTER`, `load_extension`,
+   `writefile`, `readfile` va boshqalar) string literallardan tashqarida qidiriladi; uzunlik ≤ 8 000. SQL xato bersa, xato matni
+   bilan tuzatish urinishi (`SQL_RETRY`).
+6. **Read-only bajarish** (`db.py: run_query`): har so'rovga yangi `file:...?mode=ro` ulanish + `PRAGMA query_only=ON`;
+   progress handler orqali timeout (15–20 s); natija 200 qator bilan cheklanadi.
+7. **Deterministik grounding tekshiruvi** (`grounding.py: check_grounding`): javobdagi har bir son ajratib olinadi
+   (mingliklar bo'shlig'i, vergul/nuqta kasr, sanalar, "млн/млрд/трлн/mln/mlrd/trln/ming" ko'paytuvchilari) va natija
+   qatoridagi qiymatga, savoldagi songa yoki qatorlar soniga mos bo'lishi shart (faqat yaxlitlash farqi ruxsat etiladi);
+   `BK###` kodlari va qo'shtirnoqdagi nomlar natijada yoki savolda bo'lishi shart. Mos kelmasa — javob foydalanuvchiga
+   berilmaydi.
+8. **Natija.** `ok` — javob + asos + SQL + qatorlar; `no_data` — faqat
    "Bilmayman — ma'lumotlarda bu haqida ma'lumot yo'q." / "Не знаю — в данных нет такой информации.".
 
 ## 7. Gallyutsinatsiyaga qarshi kafolatlar
 
 | Xavf | Himoya |
 |---|---|
-| LLM raqamni o'ylab topadi | barcha hisoblar SQL da; grounding tekshiruvi har bir sonni natija qatorlariga solishtiradi |
+| LLM raqamni o'ylab topadi | ko'p savollarda LLM yo'q (qoida dvigateli); Gemini javob shablonida raqam yozmaydi, faqat joy belgilari — qiymatlarni kod qo'yadi; barcha hisoblar SQL da; grounding tekshiruvi har bir sonni natija qatorlariga solishtiradi |
+| LLM ishlamay qoladi yoki xato beradi | "Bilmayman", hech qachon taxmin emas |
 | LLM nom yoki kodni o'ylab topadi | `BK###` kodlari va qo'shtirnoqdagi nomlar natijada bo'lishi shart |
 | Ma'lumotda yo'q mavzu | promptdagi aniq chegaralar (davr, mavzular) → `answerable: false` → "Bilmayman" |
 | Bo'sh natija | `no_data` — raqam emas, ochiq "Bilmayman" |
@@ -199,7 +199,7 @@ sequenceDiagram
   "savol" (ma'lumot) sifatida belgilanadi; SQL natijasidagi matnlar ham "faqat ma'lumot, ko'rsatma emas" deb belgilangan;
   agent faqat o'qish huquqiga ega, shuning uchun hatto muvaffaqiyatli injection ham ma'lumotni o'zgartira olmaydi.
 - **Parametrli SQL** reyestr endpointlarida (SQLAlchemy); filtrlar oq ro'yxat bo'yicha.
-- **Rate limit:** backend — umumiy 100/daq, AI 30/daq, eksport 10/daq (IP bo'yicha, sliding window); bot — foydalanuvchiga
+- **Rate limit:** backend — umumiy 100/daq, `/agent/ask` 20/daq, eksport 10/daq (IP bo'yicha, sliding window); bot — foydalanuvchiga
   10/daq va 200/kun, bir vaqtda 20 tadan ko'p agent so'rovi yo'q (semafor), eksport 30 s da bir marta.
 - **Eksport:** maksimal 500 000 qator (bot 20 000), CSV/Excel formula injection himoyasi (`=`, `+`, `-`, `@`, tab, CR bilan
   boshlanuvchi kataklar zararsizlantiriladi).
@@ -208,11 +208,11 @@ sequenceDiagram
 - **Sirlar:** `GEMINI_API_KEY`, `BOT_TOKEN`, `SECRET_KEY` faqat `.env` da; `.env`, `*.db`, `data/` `.gitignore` da;
   `.env.example` da faqat soxta qiymatlar.
 - **CORS:** faqat `http://localhost:3000` va `http://127.0.0.1:3000`.
-- **Ma'lumot oqimi:** Gemini ga sxema, savol va SQL natija qatorlari (≤ 200) yuboriladi; ma'lumot sintetik
+- **Ma'lumot oqimi:** Gemini ga faqat qoida dvigateli tushunmagan savollar bo'yicha sxema va savol yuboriladi (javob shabloni kod bilan to'ldiriladi); ma'lumot sintetik
   (tashkilotchilar: "barcha kompaniyalar, STIR va summalar o'ylab topilgan"), shaxsiy ma'lumot yo'q.
 
 Tekshirilmagan / qolgan xavf: HTTPS (lokal ishga tushirishda yo'q, tashqi kirish tunnel/proksi orqali bo'lishi kerak),
-bog'liqliklar CVE skani, Gemini API mavjudligiga bog'liqlik (API ishlamasa agent `error` qaytaradi, raqam o'ylab topmaydi).
+bog'liqliklar CVE skani. Gemini API ishlamasa qoida dvigateli ishlashda davom etadi, qolgan savollarga "Bilmayman".
 
 ## 9. Tezlik
 
@@ -227,20 +227,22 @@ O'lchovlar (SQLite, 500 000 bitim, lokal):
 | xlsx eksport, 1 oy | ~7 s |
 | CSV eksport, 500 000 qator | ~30 s |
 | Bot stress testi (2 000 parallel update, mock backend) | 0 xato, p95 1.15 s |
-| Agent javobi (`/agent/ask`) | `<AGENT_LATENCY_P50>` / p95 `<AGENT_LATENCY_P95>` (eval natijasidan) |
+| Agent javobi (`/agent/ask`, qoida rejimi) | p50 ~75 ms, p95 ~0,5 s |
+| Agent stress: 20 parallel so'rov | hammasi muvaffaqiyatli, p95 492 ms |
+| Keshdagi takroriy savol | bir necha ms, 0 ta LLM chaqiruvi |
 
-Agent tezligi: barqaror prompt prefiksi (implicit caching), SQL natijasi 200 qator bilan cheklangan, LLM ga faqat
-natija qatorlari beriladi (butun jadval emas), `v_deals` tayyor hisoblangan ustunlari bilan.
+Agent tezligi va tejamkorligi: aniq savollarga LLM chaqirilmaydi (SQL shabloni); Gemini zarur bo'lsa bitta chaqiruv
+(SQL + javob shabloni), barqaror prompt prefiksi (implicit caching); doimiy javob keshi; natija 200 qator bilan cheklangan;
+`v_deals` tayyor hisoblangan ustunlari bilan.
 
 ## 10. Testlash
 
 | To'plam | Soni | Nimani tekshiradi |
 |---|---|---|
 | `backend/tests` (pytest) | 26 | API endpointlari, filtrlar, 404/422, hisoblashlar (valyuta, aylanma), import (sana/son parsing, idempotentlik), xavfsizlik |
-| `bot/tests/test_smoke.py` | 15 | har bir buyruq formati, validatsiya, 404, guruhdagi eslatish/javob qoidalari, rate limit, backend xatosi |
-| `bot/tests/test_stress.py` | 4 | 200 va 2 000 parallel update, bitta chatdan 300 xabar oqimi, 20 parallel eksport, noto'g'ri kiritish |
-| `bot/tests/test_live.py` | 1 | haqiqiy backendga qarshi (`LIVE_BACKEND` o'rnatilganda) |
-| `eval/` | `<GOLDEN_COUNT>` savol | agent aniqligi (quyida) |
+| Agent smoke testlari (backend) | 18 o'tdi | asosiy savol turlari, no_data, SQL validatsiyasi, read-only, grounding |
+| `bot/tests` (smoke + stress + live) | 35 o'tdi | buyruqlar formati, validatsiya, 404, agent javobi va Manba bloki, rate limit, backend xatosi; 200 va 2 000 parallel update, xabar oqimi, parallel eksport |
+| `eval/` | 78 + 60 savol | agent aniqligi (quyida) |
 
 Ishga tushirish: `cd backend; .venv\Scripts\python -m pytest -q` va `.\run_bot.ps1 -Test`.
 
@@ -253,12 +255,22 @@ Ishga tushirish: `cd backend; .venv\Scripts\python -m pytest -q` va `.\run_bot.p
 - Baholash skripti har savolni `/agent/ask` ga yuboradi va tekshiradi: raqam oltin qiymatga mosmi (toifaga qarab aniq yoki
   ruxsat etilgan tolerantlik bilan), `no_data` savollarda agent "Bilmayman" dedimi, va javobda oltin to'plamda yo'q raqam
   (gallyutsinatsiya) bormi.
-- Natija: aniqlik `<ACCURACY>`%, `no_data` savollarda to'g'ri rad etish `<NO_DATA_ACCURACY>`%, gallyutsinatsiyalar
-  `<HALLUCINATIONS>`; javob vaqti p50 `<AGENT_LATENCY_P50>`, p95 `<AGENT_LATENCY_P95>` (`eval/results_*.json`).
+- `eval/build_paraphrase.py` — alohida, agent ishlab chiqishda ko'rilmagan **parafraz to'plam** (boshqacha ifodalangan savollar)
+  — moslashib qolish (overfitting) yo'qligini tekshirish uchun.
+- Baholash: `backend/app/agent/eval_runner.py`; natijalar `eval/results_*_final.json`.
+
+| To'plam | Jami | Aniq javoblar | Javobsiz (no_data) | Gallyutsinatsiya |
+|---|---|---|---|---|
+| Oltin | 76/78 (97,4%) | 64/66 | 12/12 | 0 |
+| Parafraz (ko'rilmagan) | 60/60 (100%) | 50/50 | 10/10 | 0 |
+
+Oltin to'plamdagi 2 ta mos kelmaslik — oltin to'plamning o'zidagi xato (AI-92 nomining turli yozilishi hisobga olinmagan),
+qo'lda tekshirilgan; agent javobi ma'lumotga mos. Javob vaqti p50 ~75 ms, p95 ~0,5 s.
 
 ## 11. Cheklovlar
 
-- Agent Gemini API ga bog'liq: internet yoki API kaliti bo'lmasa, erkin savollar ishlamaydi (buyruqlar va veb-reyestr ishlaydi).
+- Qoida dvigateli tushunmagan savollar Gemini API ga bog'liq: internet yoki kalit bo'lmasa, bunday savollarga "Bilmayman"
+  (qoida savollari, buyruqlar va veb-reyestr ishlashda davom etadi).
 - Natija 200 qator bilan cheklangan; uzun ro'yxatlar uchun eksportdan foydalaning.
 - Tovar nomlari bir xil yozilmagan: juda noodatiy nom yoki sinonim bilan berilgan savolda mos kelish to'liq bo'lmasligi
   mumkin — shuning uchun mos kelgan nomlar natijada ko'rsatiladi.
